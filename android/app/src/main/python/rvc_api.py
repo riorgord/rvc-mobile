@@ -254,10 +254,108 @@ def run_full(gsv, files_dir, out_dir):
     return " | ".join(res)
 
 
+def run_route2(gsv, files_dir, out_dir):
+    """② 拆分验证(LLM KV cache 思想):hubert→phone, mel/rmvpe→pitch_emb/sine
+    (同 run_full 前半), 第 3 步替换为 z_producer(enc_p+flow)整窗出 z 缓存
+    + dec_short 滑窗[过去12+新13+未来12]每块只算短窗 → 取中间 13 帧拼接。
+    z 环形缓冲 = KV cache 跨块复用, dec 每块只算新帧(手机实测 137ms/块)。"""
+    import json
+    from rvc_periphery import (hubert_assemble, f0_decode, f0_to_coarse,
+                               pitch_embedding, sine_source, mel_dlc)
+    out_dir = _writable_dir(gsv, out_dir, files_dir)
+    p = files_dir
+    res = []
+
+    # ---- 1. hubert 8 块 → phone [1,768,224] NCW ----
+    gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
+             "hubert_mix_def_t4800")
+    feats = []
+    for k in range(8):
+        o = _execute(gsv, {"source": np.fromfile(
+            os.path.join(p, "testdata", "hb%d.bin" % k), np.float32)})
+        feats.append(np.asarray(list(o.values())[0]).reshape(14, 768))
+    phone_nwc = hubert_assemble(feats, 224)
+    phone_dlc = phone_nwc[None].transpose(0, 2, 1)              # [1,768,224]
+
+    # ---- 2. mel + rmvpe → f0 → coarse → pitch_emb / sine ----
+    gsv.init(os.path.join(p, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
+    audio = np.fromfile(os.path.join(p, "testdata", "gya_audio.raw"), np.float32)
+    mel_basis = np.fromfile(os.path.join(p, "periphery", "mel_basis.bin"),
+                            np.float32).reshape(128, 513)
+    mel_in = mel_dlc(audio, mel_basis)                          # [1,256,128]
+    o = _execute(gsv, {"input": np.ascontiguousarray(mel_in.reshape(-1))})
+    sal = np.asarray(list(o.values())[0]).reshape(256, 360)
+    f0 = f0_decode(sal, thred=0.03)
+    coarse = f0_to_coarse(f0, 224)
+    emb = np.load(os.path.join(p, "periphery", "emb_params.npz"))
+    pe_nwc = pitch_embedding(coarse[None], emb["emb_pitch_weight"])  # [1,224,192] 帧外层
+    pe_dlc = pe_nwc.transpose(0, 2, 1)                               # [1,192,224] 通道外层
+    params = json.load(open(os.path.join(p, "periphery", "sine_params.json")))
+    sine_nwc = sine_source(f0[:224].astype(np.float32)[None], params,
+                           seed=0, use_random=True)             # [1,89600,1]
+    sine_dlc = sine_nwc.transpose(0, 2, 1)                      # [1,1,89600]
+
+    # ---- 3. z_producer(enc_p+flow 整窗出 z, 缓存复用 = KV cache) ----
+    # HTP 布局(手机实测 = onnx 转置序): phone 768×224 通道外层(phone_dlc),
+    #   pitch_emb 192×224 通道外层(pe_dlc), rnd 224×192 帧外层(gf_rnd 原样),
+    #   lengths int32, g 256 点。dec 端 z 切片再转 37×192 帧外层。
+    gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+    gf_rnd = np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32)
+    g = np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32)
+    t0 = time.perf_counter()
+    o = _execute(gsv, {
+        "phone": np.ascontiguousarray(phone_dlc.reshape(-1)),            # 768×224 通道外层
+        "g": np.ascontiguousarray(g.reshape(-1)),
+        "pitch_emb": np.ascontiguousarray(pe_dlc.reshape(-1)),           # 192×224 通道外层
+        "lengths": np.array([224], np.int32),
+        "rnd": np.ascontiguousarray(gf_rnd.reshape(-1)),                 # 224×192 帧外层
+    })
+    t_zp = (time.perf_counter() - t0) * 1000
+    z = np.asarray(list(o.values())[0]).reshape(1, 192, 224)    # [1,192,224]
+    z.tofile(os.path.join(out_dir, "route2_z.bin"))
+
+    # ---- 4. dec_short 滑窗: [过去12+新13+未来12] 37帧, 取中间 13 帧 ----
+    gsv.init(os.path.join(p, "models", "dec_short.bin.bin"), "dec_short")
+    R, B, WIN, UPP = 12, 13, 224, 400
+    # z/sine 首尾 pad(复制边缘帧), 保证首末块窗在界内
+    zp = np.concatenate([np.repeat(z[:, :, :1], R, 2), z,
+                         np.repeat(z[:, :, -1:], R + B, 2)], 2)     # [1,192,261]
+    sp = np.concatenate([np.repeat(sine_dlc[:, :, :UPP], R, 2),
+                         sine_dlc,
+                         np.repeat(sine_dlc[:, :, -UPP:], R + B, 2)], 2)
+    segs, t_dec = [], 0.0
+    for s0 in range(0, WIN, B):        # s0 = 0,13,...,221 (18块)
+        lo, hi = s0, s0 + B + 2 * R
+        t0 = time.perf_counter()
+        o = _execute(gsv, {
+            # z 块 [1,192,37] 通道外层 → 转 37×192 帧外层(HTP 期望)
+            "z": np.ascontiguousarray(zp[:, :, lo:hi].transpose(0, 2, 1).reshape(-1)),
+            "sine": np.ascontiguousarray(sp[:, :, lo * UPP:hi * UPP].reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1))})
+        t_dec += time.perf_counter() - t0
+        blk = np.asarray(list(o.values())[0]).ravel().astype(np.float32)
+        segs.append(blk[R * UPP:(R + B) * UPP])
+    audio = np.concatenate(segs)[:WIN * UPP]                     # 234→224 帧
+    audio.tofile(os.path.join(out_dir, "route2_audio.raw"))
+    ref = np.fromfile(os.path.join(p, "testdata", "gya_ref_audio.raw"),
+                      np.float32).ravel()
+    n = min(audio.size, ref.size)
+    ca = np.corrcoef(audio[:n], ref[:n])[0, 1]
+    res.append("route2: z_producer=%.0fms dec=%d块 avg=%.0fms corr=%.4f out=%dB"
+               % (t_zp, len(segs), t_dec / len(segs) * 1000, ca, audio.nbytes))
+    return " | ".join(res)
+
+
 def self_test_full(native_lib_dir, files_dir, uid, profile=False,
                    out_dir="/sdcard/rvc_exp"):
     gsv = init(native_lib_dir, files_dir, uid, profile)
     return run_full(gsv, files_dir, out_dir)
+
+
+def self_test_route2(native_lib_dir, files_dir, uid, profile=False,
+                     out_dir="/sdcard/rvc_exp"):
+    gsv = init(native_lib_dir, files_dir, uid, profile)
+    return run_route2(gsv, files_dir, out_dir)
 
 
 def self_test_live_io(native_lib_dir, files_dir, uid, profile=False):
@@ -368,6 +466,16 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     if rms_mix_rate != 1:
         out = change_rms(audio, 16000, out, 40000, rms_mix_rate).astype(np.float32)
     return out.tobytes()
+
+
+def process_audio_ref(native_lib_dir, files_dir, uid, profile=False,
+                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33):
+    """模拟实时:打包参考音频(gya_audio.raw)走 process_audio 完整实时链路,
+    返回 40k 变声音频 bytes(AudioTrack 播放)。用于对比 麦克风 vs 参考音频。"""
+    audio = np.fromfile(os.path.join(files_dir, "testdata", "gya_audio.raw"),
+                        np.float32)
+    return process_audio(native_lib_dir, files_dir, uid, audio.tobytes(), profile,
+                         f0_up_key, rms_mix_rate, index_rate, protect)
 
 
 def self_test(native_lib_dir, files_dir, uid, profile=False,

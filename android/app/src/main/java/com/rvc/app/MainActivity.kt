@@ -62,6 +62,14 @@ class MainActivity : Activity() {
             text = "实时"
             setOnClickListener { runLive() }
         }
+        val route2Btn = Button(this).apply {
+            text = "②拆分"
+            setOnClickListener { runRoute2() }
+        }
+        val simBtn = Button(this).apply {
+            text = "模拟"
+            setOnClickListener { runSim() }
+        }
         // 开关单独一行;按钮一行均分(防挤出屏幕)
         val rowSwitch = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -122,13 +130,20 @@ class MainActivity : Activity() {
             addView(runBtn, w)
             addView(runAllBtn, w)
             addView(runFullBtn, w)
+        }
+        val rowBtns2 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             addView(liveBtn, w)
+            addView(route2Btn, w)
+            addView(simBtn, w)
         }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
             addView(rowSwitch)
             addView(rowBtns)
+            addView(rowBtns2)
             addView(rowParams1)
             addView(rowParams2)
             addView(scroll, LinearLayout.LayoutParams(
@@ -199,6 +214,64 @@ class MainActivity : Activity() {
                 log("RESULT_FULL: " + out.toString())
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
+            }
+        }.start()
+    }
+
+    /** ② 拆分测速:z_producer + dec_short 滑窗,对比 jielaide gen 参考。 */
+    private fun runRoute2() {
+        val profile = profSwitch.isChecked
+        log("② 拆分测速 (profile=" + profile + ")…")
+        Thread {
+            try {
+                ensurePy()
+                val out = Python.getInstance().getModule("rvc_api")
+                    .callAttr("self_test_route2", nativeLibDir(),
+                        filesDir.absolutePath, android.os.Process.myUid(),
+                        profile, "/sdcard/rvc_exp")
+                log("RESULT_ROUTE2: " + out.toString())
+            } catch (e: Throwable) {
+                log("PY FAIL: " + e)
+            }
+        }.start()
+    }
+
+    /** 模拟实时:打包参考音频(gya_audio.raw)走 process_audio 实时链路,播放。
+     * 对比 麦克风实时(runLive):参考音频走同链路,判断是链路问题还是麦克风输入问题。 */
+    private fun runSim() {
+        val profile = profSwitch.isChecked
+        val key = keyInput.text.toString().toIntOrNull() ?: 0
+        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
+        val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
+        val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
+        log("模拟实时:参考音频→实时链路→播放 key=%d rms=%.2f idx=%.2f prot=%.2f".format(key, rms, idx, prot))
+        Thread {
+            try {
+                ensurePy()
+                val outBytes = Python.getInstance().getModule("rvc_api")
+                    .callAttr("process_audio_ref", nativeLibDir(),
+                        filesDir.absolutePath, android.os.Process.myUid(),
+                        profile, key, rms, idx, prot)
+                    .toJava(ByteArray::class.java)
+                val outF = FloatArray(outBytes.size / 4)
+                ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
+                val tr = AudioTrack.Builder()
+                    .setAudioAttributes(AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_MEDIA)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
+                    .setAudioFormat(AudioFormat.Builder()
+                        .setSampleRate(40000)
+                        .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
+                        .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+                    .setBufferSizeInBytes(outBytes.size)
+                    .setTransferMode(AudioTrack.MODE_STATIC)
+                    .build()
+                tr.write(outF, 0, outF.size, AudioTrack.WRITE_BLOCKING)
+                tr.play()
+                log("模拟播放 " + outF.size + " samples @40k (" +
+                    String.format("%.2f", outF.size / 40000.0) + "s)")
+            } catch (e: Throwable) {
+                log("SIM FAIL: " + e)
             }
         }.start()
     }
