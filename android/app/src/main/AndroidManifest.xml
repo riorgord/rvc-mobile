@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- QNN unsigned PD 激活必需:允许执行 app 私有目录原生二进制 -->
+    <uses-permission android:name="android.permission.EXECUTE_PRIVATE_BINARY" />
+    <!-- 读 /sdcard 模型/角色 + profiling 写 /sdcard/rvc_exp -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 前台服务:防 MIUI 冻结(QNN 长任务,冻结即失败) -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- M2 实时变声:麦克风采集 + 音频输出 -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+    <application
+        android:label="RVC App"
+        android:icon="@mipmap/ic_launcher"
+        android:extractNativeLibs="true"
+        android:requestLegacyExternalStorage="true"
+        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>
