@@ -378,6 +378,7 @@ def self_test_live_io(native_lib_dir, files_dir, uid, profile=False):
 
 _IDX_CACHE = {}
 _PROJ_CACHE = {}
+_IDX_V2 = None
 
 
 def _proj_mat(p):
@@ -402,6 +403,14 @@ def _idx_vecs_full(p):
         _IDX_CACHE["idx_full"] = np.fromfile(
             os.path.join(p, "periphery", "naiqiawang_idx.bin"), np.float32).reshape(-1, 768)
     return _IDX_CACHE["idx_full"]
+
+
+def _idx_v2(p):
+    """索引平方和(常量,预处理缓存一次)——避免每轮对 52140×768 逐元素平方(~300ms)。"""
+    global _IDX_V2
+    if _IDX_V2 is None:
+        _IDX_V2 = np.sum(_idx_vecs_full(p) * _idx_vecs_full(p), axis=1)
+    return _IDX_V2
 
 
 def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
@@ -469,8 +478,7 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     F50 = np.concatenate(feats, 0)[:112]                    # [112,768]
     _tm.append(("ph:hubert", time.perf_counter()))
     if index_rate > 0:
-        F50m = index_mix(F50, _idx_vecs(p), index_rate,
-                         proj=_proj_mat(p), idx_full=_idx_vecs_full(p))  # 降维搜+原始混
+        F50m = index_mix(F50, _idx_vecs_full(p), index_rate, v2=_idx_v2(p))  # 768精确+v2缓存
     else:
         F50m = F50
     _tm.append(("ph:idxmix", time.perf_counter()))
@@ -541,6 +549,17 @@ def preload_default(native_lib_dir, files_dir, uid, profile=False):
                             ("fcpe_256.bin", "fcpe_256"),
                             ("gen_fp32.bin", "gen_fp32")]:
         gsv.init(os.path.join(files_dir, "models", bin_name), gname)
+    # BLAS 探针:判断 numpy 是否吃到 OpenBLAS(GFLOP/s >> 3 则有)
+    try:
+        import time as _t
+        A = np.random.RandomState(1).rand(112, 768).astype(np.float32)
+        B = np.random.RandomState(2).rand(20000, 768).astype(np.float32)
+        _t0 = _t.perf_counter()
+        A @ B.T
+        _dt = _t.perf_counter() - _t0
+        print("[RVC-BLAS] 768x20000 GEMM: %.0fms  %.1f GFLOP/s" % (_dt * 1000, 2 * 112 * 20000 * 768 / _dt / 1e9))
+    except Exception as _e:
+        print("[RVC-BLAS] probe fail: %s" % _e)
     return "ok"
 
 

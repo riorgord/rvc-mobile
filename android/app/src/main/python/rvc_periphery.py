@@ -181,20 +181,24 @@ def change_rms(inp, sr1, out, sr2, rate=0.25):
 
 
 # ---------------- index 音色索引(RVC index_rate) ----------------
-def index_mix(feats, idx_vecs, rate, k=8, proj=None, idx_full=None):
+def index_mix(feats, idx_vecs, rate, k=8, proj=None, idx_full=None, v2=None):
     """feats [T,768] → 角色特征库 L2 最近邻 top-k 加权混合 → [T,768]。
-    加速模式(proj[768,D] + idx_full[768]):用 feats@proj 与降维库 idx_vecs
-    搜最近邻行号,再取原始库 idx_full 加权混合 → 输出保持 768 维喂 gen。
-    兼容模式(proj=None):原逻辑,搜索+混合都用 idx_vecs。"""
+    兼容两种模式:
+      proj=None(默认):768 维精确 L2(保真)。v2 传入预计算索引平方和(常量缓存,
+                       避免每轮对 idx 逐元素平方 300ms)。
+      proj[768,D]+idx_full:降维搜索(256 维)找最近邻行号,原始库加权混合。
+    """
     T = feats.shape[0]
     if proj is not None and idx_full is not None:
         f_se = (feats @ proj).astype(np.float32)          # [T,D] 搜索特征
         f2 = np.sum(f_se * f_se, axis=1, keepdims=True)
-        v2 = np.sum(idx_vecs * idx_vecs, axis=1)
+        if v2 is None:
+            v2 = np.sum(idx_vecs * idx_vecs, axis=1)
         d2 = f2 + v2[None, :] - 2.0 * (f_se @ idx_vecs.T)
     else:
         f2 = np.sum(feats * feats, axis=1, keepdims=True)
-        v2 = np.sum(idx_vecs * idx_vecs, axis=1)
+        if v2 is None:
+            v2 = np.sum(idx_vecs * idx_vecs, axis=1)
         d2 = f2 + v2[None, :] - 2.0 * (feats @ idx_vecs.T)
     kk = min(k, idx_vecs.shape[0])
     part = np.argpartition(d2, kk - 1, axis=1)[:, :kk]          # [T,kk]
