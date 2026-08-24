@@ -7,10 +7,15 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.os.Bundle
+import android.view.View
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import com.chaquo.python.Python
@@ -33,6 +38,11 @@ class MainActivity : Activity() {
     private lateinit var rmsInput: EditText
     private lateinit var idxInput: EditText
     private lateinit var protInput: EditText
+    private lateinit var f0Spinner: Spinner
+    private lateinit var f0Progress: ProgressBar
+    private val f0Loaded = HashMap<String, Boolean>()
+    private val f0Loading = HashMap<String, Boolean>()
+    @Volatile private var preloadDone = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -46,6 +56,7 @@ class MainActivity : Activity() {
         profSwitch = Switch(this).apply {
             text = "profiling → /sdcard/rvc_exp"
         }
+        profSwitch.isChecked = intent.getBooleanExtra("profile", false)
         val runBtn = Button(this).apply {
             text = "跑 gen 自检"
             setOnClickListener { runGen() }
@@ -90,18 +101,35 @@ class MainActivity : Activity() {
             setPadding(16, 0, 16, 0)
         }
         idxInput = EditText(this).apply {
-            setText("0.75")
+            setText("0.5")
             hint = "index_rate"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
             setPadding(16, 0, 16, 0)
         }
         protInput = EditText(this).apply {
-            setText("0.33")
+            setText("0.4")
             hint = "protect 0-0.5"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
             setPadding(16, 0, 16, 0)
+        }
+        f0Spinner = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity,
+                android.R.layout.simple_spinner_item,
+                arrayOf("fcpe", "rmvpe")).apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) {
+                    ensureF0Loaded(p?.getItemAtPosition(pos)?.toString() ?: "fcpe")
+                }
+                override fun onNothingSelected(p: AdapterView<*>?) {}
+            }
+        }
+        f0Progress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            isIndeterminate = true
+            visibility = View.GONE
         }
         fun paramCell(label: String, edit: EditText): LinearLayout {
             return LinearLayout(this).apply {
@@ -123,6 +151,15 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             addView(paramCell("index_rate 音色(0-1)", idxInput), w)
             addView(paramCell("protect 清音(0-0.5)", protInput), w)
+        }
+        val rowF0 = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(TextView(this@MainActivity).apply {
+                text = "F0 提取"
+                textSize = 12f
+                setPadding(0, 8, 8, 0)
+            }, w)
+            addView(f0Spinner, w)
         }
         val rowBtns = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -146,6 +183,8 @@ class MainActivity : Activity() {
             addView(rowBtns2)
             addView(rowParams1)
             addView(rowParams2)
+            addView(rowF0)
+            addView(f0Progress)
             addView(scroll, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
         }
@@ -164,10 +203,54 @@ class MainActivity : Activity() {
             File(filesDir, "hexagon-v69").listFiles()?.size ?: 0,
             File(filesDir, "testdata").listFiles()?.size ?: 0,
             File(filesDir, "periphery").listFiles()?.size ?: 0))
-        // 验证阶段:启动自动跑全链路(M1b,无后处理,corr 对比 PC 参考)
-        // (process_audio 实时路径含 UV 插值+rms,听感验证走"实时"按钮)
-        log("自动 全链路…")
-        runFull(intent.getBooleanExtra("profile", profSwitch.isChecked))
+        // 默认管线预载:hubert + fcpe + gen 常驻(rmvpe 切换时现场加载+进度条)
+        // (rmvpe 自动全链路验证改由"全链路"按钮手动触发)
+        log("预载 fcpe 管线…")
+        preloadDefault()
+    }
+
+    /** 启动预载默认 fcpe 管线(hubert+fcpe+gen 常驻)。 */
+    private fun preloadDefault() {
+        Thread {
+            try {
+                ensurePy()
+                Python.getInstance().getModule("rvc_api")
+                    .callAttr("preload_default", nativeLibDir(), filesDir.absolutePath,
+                        android.os.Process.myUid())
+                f0Loaded["fcpe"] = true
+                log("fcpe 管线预载完成")
+            } catch (e: Throwable) {
+                log("预载失败: " + e)
+            } finally {
+                preloadDone = true
+            }
+        }.start()
+    }
+
+    /** 切换 F0 提取器:未加载则现场加载(进度条显示,成功才标记,失败可重试)。
+     * fcpe 在预载完成前交给 preloadDefault(避免并发 init 损坏 gsv slot)。 */
+    private fun ensureF0Loaded(m: String) {
+        if (f0Loaded[m] == true) return
+        if (f0Loading[m] == true) return
+        if (m == "fcpe" && !preloadDone) return          // 预载负责 fcpe
+        f0Loading[m] = true
+        f0Progress.visibility = View.VISIBLE
+        Thread {
+            try {
+                ensurePy()
+                Python.getInstance().getModule("rvc_api")
+                    .callAttr("init_f0", nativeLibDir(), filesDir.absolutePath,
+                        android.os.Process.myUid(), m)
+                f0Loaded[m] = true
+                log("F0 %s 已就绪" .format(m))
+            } catch (e: Throwable) {
+                f0Loaded.remove(m)                       // 失败允许下次重试
+                log("F0 加载失败: " + e)
+            } finally {
+                f0Loading[m] = false
+                runOnUiThread { f0Progress.visibility = View.GONE }
+            }
+        }.start()
     }
 
     private fun runGen() {
@@ -244,14 +327,15 @@ class MainActivity : Activity() {
         val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
         val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
-        log("模拟实时:参考音频→实时链路→播放 key=%d rms=%.2f idx=%.2f prot=%.2f".format(key, rms, idx, prot))
+        val f0m = f0Spinner.selectedItem.toString()
+        log("模拟实时:参考音频→实时链路→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s".format(key, rms, idx, prot, f0m))
         Thread {
             try {
                 ensurePy()
                 val outBytes = Python.getInstance().getModule("rvc_api")
                     .callAttr("process_audio_ref", nativeLibDir(),
                         filesDir.absolutePath, android.os.Process.myUid(),
-                        profile, key, rms, idx, prot)
+                        profile, key, rms, idx, prot, f0m)
                     .toJava(ByteArray::class.java)
                 val outF = FloatArray(outBytes.size / 4)
                 ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
@@ -307,7 +391,8 @@ class MainActivity : Activity() {
         val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
         val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
-        log("实时:录音→变声→播放 key=%d rms=%.2f idx=%.2f prot=%.2f".format(key, rms, idx, prot))
+        val f0m = f0Spinner.selectedItem.toString()
+        log("实时:录音→变声→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s".format(key, rms, idx, prot, f0m))
         Thread {
             try {
                 ensurePy()
@@ -334,7 +419,7 @@ class MainActivity : Activity() {
                 ByteBuffer.wrap(inBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(buf)
                 val outBytes = Python.getInstance().getModule("rvc_api")
                     .callAttr("process_audio", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), inBytes, profile, key, rms, idx, prot)
+                        android.os.Process.myUid(), inBytes, profile, key, rms, idx, prot, f0m)
                     .toJava(ByteArray::class.java)
                 val outF = FloatArray(outBytes.size / 4)
                 ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)

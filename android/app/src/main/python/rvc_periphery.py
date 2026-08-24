@@ -69,6 +69,21 @@ def f0_decode(sal, thred=0.03):
     return f0
 
 
+def fcpe_decode(latent, cent_table, threshold=0.006):
+    """torchfcpe latent2cents_local_decoder + cent_to_f0(numpy 版)。
+    latent [T,360](已 sigmoid)→ f0 [T](unvoiced=0)。local_argmax 9 窗加权均值。"""
+    T = latent.shape[0]
+    confident = latent.max(axis=-1)
+    max_index = latent.argmax(axis=-1)
+    local_idx = (np.arange(9) + (max_index[:, None] - 4)).clip(0, 359)
+    ci_l = cent_table[local_idx]                              # [T,9]
+    y_l = np.take_along_axis(latent, local_idx, axis=-1)      # [T,9]
+    cents = (ci_l * y_l).sum(-1) / (y_l.sum(-1) + 1e-8)       # [T]
+    f0 = 10 * 2 ** (cents / 1200.0)
+    f0[confident <= threshold] = 0
+    return f0
+
+
 def f0_to_coarse(f0, p_len=224):
     """f0 [T] → coarse [p_len] int64(1..255)"""
     f0 = f0[:p_len]
@@ -112,21 +127,18 @@ def mel_dlc(audio, mel_basis, n_frames=256, n_fft=1024, hop=160):
 
 # ---------------- RVC GUI 后处理(f0 插值/变调/rms 混合) ----------------
 def interp_linear_1d(x, out_len):
-    """F.interpolate(size=out_len, mode='linear', align_corners=False) numpy 版。
-    x [in_len] → [out_len](坐标 src=(i+0.5)*in_len/out_len-0.5,clamp)"""
+    """F.interpolate(size=out_len, mode='linear', align_corners=False) numpy 向量化版。
+    x [in_len] → [out_len](坐标 src=(i+0.5)*in_len/out_len-0.5,clamp)。
+    原 Python 循环(178880 次)→ 全向量化 gather。"""
     in_len = x.shape[0]
     scale = in_len / out_len
-    y = np.empty(out_len, dtype=x.dtype)
-    for i in range(out_len):
-        pos = (i + 0.5) * scale - 0.5
-        if pos < 0:
-            pos = 0.0
-        a = int(np.floor(pos))
-        frac = pos - a
-        if a >= in_len - 1:
-            y[i] = x[-1]
-        else:
-            y[i] = x[a] * (1 - frac) + x[a + 1] * frac
+    pos = (np.arange(out_len, dtype=np.float64) + 0.5) * scale - 0.5
+    pos = np.maximum(pos, 0.0)
+    a = np.floor(pos).astype(np.int64)
+    frac = pos - a
+    safe_a = np.minimum(a, in_len - 2)
+    y = np.where(a >= in_len - 1, x[-1],
+                 x[safe_a] * (1 - frac) + x[safe_a + 1] * frac)
     return y
 
 
@@ -141,16 +153,19 @@ def f0_uv_interp(f0):
 
 
 def _rms(y, frame_length, hop_length):
-    """librosa.feature.rms(center=True, pad 0) numpy 版。"""
+    """librosa.feature.rms(center=True, pad 0) numpy 版。
+    O(n) 前缀和:对 x² 做 cumsum,滑窗和=前缀差(避免大索引 gather,手机上快)。"""
     pad = frame_length // 2
     yp = np.pad(y, (pad, pad), mode="constant")
     n = len(yp)
     frames = 1 + (n - frame_length) // hop_length
-    out = np.empty(frames, dtype=np.float64)
-    for i in range(frames):
-        seg = yp[i * hop_length:i * hop_length + frame_length]
-        out[i] = np.sqrt(np.mean(seg.astype(np.float64) ** 2))
-    return out
+    x2 = yp.astype(np.float64) ** 2
+    c = np.empty(n + 1, dtype=np.float64)
+    c[0] = 0.0
+    np.cumsum(x2, out=c[1:])
+    starts = np.arange(frames, dtype=np.int64) * hop_length
+    sums = c[starts + frame_length] - c[starts]
+    return np.sqrt(sums / frame_length)
 
 
 def change_rms(inp, sr1, out, sr2, rate=0.25):
@@ -166,20 +181,30 @@ def change_rms(inp, sr1, out, sr2, rate=0.25):
 
 
 # ---------------- index 音色索引(RVC index_rate) ----------------
-def index_mix(feats, idx_vecs, rate, k=8):
-    """RVC index_rate:hubert 特征 → 角色特征库 L2 最近邻 top-k 加权混合。
-    feats [T,768] fp32, idx_vecs [N,768] fp32, rate=index_rate(GUI 默认 0.75)。
-    返回 feats*rate + index_mix*(1-rate) [T,768] fp32。"""
-    f2 = np.sum(feats * feats, axis=1, keepdims=True)          # [T,1]
-    v2 = np.sum(idx_vecs * idx_vecs, axis=1)                    # [N]
-    d2 = f2 + v2[None, :] - 2.0 * (feats @ idx_vecs.T)          # [T,N] L2²
+def index_mix(feats, idx_vecs, rate, k=8, proj=None, idx_full=None):
+    """feats [T,768] → 角色特征库 L2 最近邻 top-k 加权混合 → [T,768]。
+    加速模式(proj[768,D] + idx_full[768]):用 feats@proj 与降维库 idx_vecs
+    搜最近邻行号,再取原始库 idx_full 加权混合 → 输出保持 768 维喂 gen。
+    兼容模式(proj=None):原逻辑,搜索+混合都用 idx_vecs。"""
     T = feats.shape[0]
+    if proj is not None and idx_full is not None:
+        f_se = (feats @ proj).astype(np.float32)          # [T,D] 搜索特征
+        f2 = np.sum(f_se * f_se, axis=1, keepdims=True)
+        v2 = np.sum(idx_vecs * idx_vecs, axis=1)
+        d2 = f2 + v2[None, :] - 2.0 * (f_se @ idx_vecs.T)
+    else:
+        f2 = np.sum(feats * feats, axis=1, keepdims=True)
+        v2 = np.sum(idx_vecs * idx_vecs, axis=1)
+        d2 = f2 + v2[None, :] - 2.0 * (feats @ idx_vecs.T)
     kk = min(k, idx_vecs.shape[0])
     part = np.argpartition(d2, kk - 1, axis=1)[:, :kk]          # [T,kk]
     score = -d2[np.arange(T)[:, None], part]                    # faiss L2 负距离
     w = np.square(1.0 / (score + 1e-6))
     w /= w.sum(axis=1, keepdims=True)
-    npy = np.sum(idx_vecs[part] * w[:, :, None], axis=1)        # [T,768]
+    if idx_full is not None:
+        npy = np.sum(idx_full[part] * w[:, :, None], axis=1)    # [T,768] 原始混合
+    else:
+        npy = np.sum(idx_vecs[part] * w[:, :, None], axis=1)    # [T,D]
     # RVC: feats = npy*index_rate + (1-index_rate)*feats (index 占比=rate)
     return (npy * rate + feats * (1.0 - rate)).astype(np.float32)
 

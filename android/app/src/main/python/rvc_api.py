@@ -377,38 +377,75 @@ def self_test_live_io(native_lib_dir, files_dir, uid, profile=False):
 
 
 _IDX_CACHE = {}
+_PROJ_CACHE = {}
+
+
+def _proj_mat(p):
+    """通用随机投影矩阵 768→256(固定种子,与数据无关;换模型/角色复用)。"""
+    if "proj" not in _PROJ_CACHE:
+        _PROJ_CACHE["proj"] = np.fromfile(
+            os.path.join(p, "periphery", "proj.bin"), np.float32).reshape(768, 256)
+    return _PROJ_CACHE["proj"]
 
 
 def _idx_vecs(p):
+    """降维搜索库(256 维):L2 最近邻搜索用(53MB)。"""
     if "idx" not in _IDX_CACHE:
         _IDX_CACHE["idx"] = np.fromfile(
-            os.path.join(p, "periphery", "naiqiawang_idx.bin"),
-            np.float32).reshape(-1, 768)
+            os.path.join(p, "periphery", "idx256.bin"), np.float32).reshape(-1, 256)
     return _IDX_CACHE["idx"]
 
 
+def _idx_vecs_full(p):
+    """原始混合库(768 维):最近邻命中后取原始向量加权混合,输出 768 维喂 gen。"""
+    if "idx_full" not in _IDX_CACHE:
+        _IDX_CACHE["idx_full"] = np.fromfile(
+            os.path.join(p, "periphery", "naiqiawang_idx.bin"), np.float32).reshape(-1, 768)
+    return _IDX_CACHE["idx_full"]
+
+
 def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
-                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33):
+                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                  f0_method="rmvpe"):
     """M2 实时链路入口:内存 16k fp32 音频(bytes) → 40k fp32 变声音频(bytes)。
-    完整 RVC 推理:mel→rmvpe→f0(uv插值+变调)→index音色混合→protect→phone
+    完整 RVC 推理:mel→rmvpe/fcpe→f0(uv插值+变调)→index音色混合→protect→phone
     →gen→rms混合。f0_up_key 变调半音; rms_mix_rate RMS 占比(默认0.25);
-    index_rate 音色索引强度(GUI默认0.75); protect 清音保护(GUI默认0.33)。"""
+    index_rate 音色索引强度(GUI默认0.75); protect 清音保护(GUI默认0.33);
+    f0_method F0 提取器(rmvpe=音准好/慢, fcpe=快8.8x/音准略逊)。"""
     import json
     from rvc_periphery import (hubert_blocks, mel_dlc, f0_decode, f0_to_coarse,
                                pitch_embedding, sine_source, f0_uv_interp,
-                               change_rms, index_mix, _interp_nearest)
+                               change_rms, index_mix, _interp_nearest,
+                               fcpe_decode)
     gsv = init(native_lib_dir, files_dir, uid, profile)
     p = files_dir
     audio = np.frombuffer(bytes(audio_bytes), np.float32)
+    t0 = time.perf_counter()
+    _tm = [t0]
 
-    # ---- 1. mel 提取 → rmvpe → f0(f0 供 protect 用) ----
+    # ---- 1. mel 提取 → rmvpe/fcpe → f0(f0 供 protect 用) ----
     mel_basis = np.fromfile(os.path.join(p, "periphery", "mel_basis.bin"),
                             np.float32).reshape(128, 513)
     mel_in = mel_dlc(audio, mel_basis)                      # [1,256,128]
-    gsv.init(os.path.join(p, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
-    o = _execute(gsv, {"input": np.ascontiguousarray(mel_in.reshape(-1))})
-    sal = np.asarray(list(o.values())[0]).reshape(256, 360)
-    f0 = f0_decode(sal, thred=0.03)
+    if f0_method == "fcpe":
+        gsv.init(os.path.join(p, "models", "fcpe_256.bin"), "fcpe_256")
+        cent_table = np.fromfile(os.path.join(p, "periphery", "cent_table.bin"),
+                                 np.float32)
+        o = _execute(gsv, {"mel": np.ascontiguousarray(mel_in[0].T.reshape(-1))})
+        latent = np.asarray(list(o.values())[0]).reshape(256, 360)
+        f0 = fcpe_decode(latent, cent_table, 0.006)
+        if _STATE.get("profile"):
+            try:
+                od = _writable_dir(gsv, "/sdcard/rvc_exp", p)
+                gsv.profile_dump(os.path.join(od, "live_fcpe_prof.jsonl"), 0, 0)
+            except Exception:
+                pass
+    else:
+        gsv.init(os.path.join(p, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
+        o = _execute(gsv, {"input": np.ascontiguousarray(mel_in.reshape(-1))})
+        sal = np.asarray(list(o.values())[0]).reshape(256, 360)
+        f0 = f0_decode(sal, thred=0.03)
+    _tm.append(("mel+f0(%s)" % f0_method, time.perf_counter()))
     f0 = f0_uv_interp(f0)                                   # 无声帧插值
     if f0_up_key != 0:
         f0 = f0 * pow(2, f0_up_key / 12)                    # 变调
@@ -418,20 +455,25 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     params = json.load(open(os.path.join(p, "periphery", "sine_params.json")))
     sine = sine_source(f0[:224].astype(np.float32)[None], params,
                        seed=0, use_random=True).transpose(0, 2, 1)
+    _tm.append(("f0post", time.perf_counter()))
 
     # ---- 2. hubert 8 块 → index_mix → protect → interp → phone ----
     gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
              "hubert_mix_def_t4800")
+    _tm.append(("ph:init", time.perf_counter()))
     blocks, nf50 = hubert_blocks(audio)
     feats = []
     for b in blocks:
         o = _execute(gsv, {"source": np.ascontiguousarray(b)})
         feats.append(np.asarray(list(o.values())[0]).reshape(14, 768))
     F50 = np.concatenate(feats, 0)[:112]                    # [112,768]
+    _tm.append(("ph:hubert", time.perf_counter()))
     if index_rate > 0:
-        F50m = index_mix(F50, _idx_vecs(p), index_rate)     # 音色映射
+        F50m = index_mix(F50, _idx_vecs(p), index_rate,
+                         proj=_proj_mat(p), idx_full=_idx_vecs_full(p))  # 降维搜+原始混
     else:
         F50m = F50
+    _tm.append(("ph:idxmix", time.perf_counter()))
     F50o = F50.copy() if protect < 0.5 else None            # 原始特征(protect 用)
     f = np.concatenate([F50m, F50m[-1:]], 0)                # [113,768]
     f100 = _interp_nearest(f, 2)[:224]                      # [224,768]
@@ -443,9 +485,11 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
         f100 = f100 * pitchff[:, None] + f100o * (1 - pitchff[:, None])
     phone_nwc = f100.astype(np.float32)
     phone_dlc = phone_nwc[None].transpose(0, 2, 1)          # [1,768,224]
+    _tm.append(("phone", time.perf_counter()))
 
     # ---- 3. gen ----
     gsv.init(os.path.join(p, "models", "gen_fp32.bin"), "gen_fp32")
+    _tm.append(("gen:init", time.perf_counter()))
     tensors = {
         "phone": phone_dlc,
         "pitch_emb": pe,
@@ -454,8 +498,10 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
         "speaker_emb": np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32),
         "sine": sine,
     }
+    _tm.append(("gen:tp", time.perf_counter()))
     o = _execute(gsv, tensors)
     out = np.asarray(list(o.values())[0]).ravel().astype(np.float32)
+    _tm.append(("gen", time.perf_counter()))
     if _STATE.get("profile"):
         try:
             od = _writable_dir(gsv, "/sdcard/rvc_exp", p)
@@ -465,17 +511,47 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     # RVC GUI:rms_mix_rate RMS 包络混合(保留原声动态;1=纯输出不混合)
     if rms_mix_rate != 1:
         out = change_rms(audio, 16000, out, 40000, rms_mix_rate).astype(np.float32)
+    _tm.append(("rms", time.perf_counter()))
+    # 分段增量耗时(相对上一段)
+    last = t0
+    segs = []
+    for name, t in _tm[1:]:
+        segs.append("%s=%dms" % (name, (t - last) * 1000))
+        last = t
+    print("[RVC-T] %s TOTAL=%dms" % (" ".join(segs), (time.perf_counter() - t0) * 1000))
     return out.tobytes()
 
 
 def process_audio_ref(native_lib_dir, files_dir, uid, profile=False,
-                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33):
+                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                      f0_method="rmvpe"):
     """模拟实时:打包参考音频(gya_audio.raw)走 process_audio 完整实时链路,
     返回 40k 变声音频 bytes(AudioTrack 播放)。用于对比 麦克风 vs 参考音频。"""
     audio = np.fromfile(os.path.join(files_dir, "testdata", "gya_audio.raw"),
                         np.float32)
     return process_audio(native_lib_dir, files_dir, uid, audio.tobytes(), profile,
-                         f0_up_key, rms_mix_rate, index_rate, protect)
+                         f0_up_key, rms_mix_rate, index_rate, protect, f0_method)
+
+
+def preload_default(native_lib_dir, files_dir, uid, profile=False):
+    """启动预载默认 fcpe 管线:hubert + fcpe + gen 常驻内存(实时零加载开销)。
+    rmvpe 不预载,切换时由 init_f0 现场加载。"""
+    gsv = init(native_lib_dir, files_dir, uid, profile)
+    for bin_name, gname in [("hubert_mix_def_t4800.bin", "hubert_mix_def_t4800"),
+                            ("fcpe_256.bin", "fcpe_256"),
+                            ("gen_fp32.bin", "gen_fp32")]:
+        gsv.init(os.path.join(files_dir, "models", bin_name), gname)
+    return "ok"
+
+
+def init_f0(native_lib_dir, files_dir, uid, f0_method, profile=False):
+    """F0 提取器现场加载(gsv 同名缓存命中则直接激活,不重载)。"""
+    gsv = init(native_lib_dir, files_dir, uid, profile)
+    if f0_method == "fcpe":
+        gsv.init(os.path.join(files_dir, "models", "fcpe_256.bin"), "fcpe_256")
+    else:
+        gsv.init(os.path.join(files_dir, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
+    return "ok"
 
 
 def self_test(native_lib_dir, files_dir, uid, profile=False,
