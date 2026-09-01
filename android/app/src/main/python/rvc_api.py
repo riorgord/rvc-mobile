@@ -22,8 +22,10 @@ def _preload(lib_dir):
     order = ["libqti_dsp.so", "libvmmem.so", "libcdsprpc.so", "libhidlbase.so",
              "libhidltransport.so", "libhwbinder.so", "libhardware.so",
              "libutils.so", "liblog.so", "libcutils.so", "libdmabufheap.so",
-             "libbase.so", "libc++.so",
-             "libQnnHtpV69Stub.so", "libQnnHtpNetRunExtensions.so"]
+             "libbase.so", "libc++.so", "libc++_shared.so",
+             "libQnnHtpV69Stub.so", "libQnnHtpV69CalculatorStub.so",
+             "libQnnHtpNetRunExtensions.so",
+             "vendor.qti.hardware.dsp@1.0.so"]
     for name in order:
         p = os.path.join(lib_dir, name)
         if os.path.exists(p):
@@ -224,7 +226,7 @@ def run_full(gsv, files_dir, out_dir):
     pe_dlc.tofile(os.path.join(out_dir, "full_pitch_emb.bin"))
     sine_dlc.tofile(os.path.join(out_dir, "full_sine.bin"))
 
-    # ---- 3. gen: phone/pitch_emb/sine 用算出的,rnd/speaker_emb 用打包的 ----
+    # ---- 3. gen(老 gen_fp32 官方完整模型) ----
     gsv.init(os.path.join(p, "models", "gen_fp32.bin"), "gen_fp32")
     tensors = {
         "phone": phone_dlc,
@@ -315,8 +317,8 @@ def run_route2(gsv, files_dir, out_dir):
     z.tofile(os.path.join(out_dir, "route2_z.bin"))
 
     # ---- 4. dec_short 滑窗: [过去12+新13+未来12] 37帧, 取中间 13 帧 ----
-    gsv.init(os.path.join(p, "models", "dec_short.bin.bin"), "dec_short")
-    R, B, WIN, UPP = 12, 13, 224, 400
+    gsv.init(os.path.join(p, "models", "dec_short_t61.bin.bin"), "dec_short_T61")
+    R, B, WIN, UPP = 12, 37, 224, 400
     # z/sine 首尾 pad(复制边缘帧), 保证首末块窗在界内
     zp = np.concatenate([np.repeat(z[:, :, :1], R, 2), z,
                          np.repeat(z[:, :, -1:], R + B, 2)], 2)     # [1,192,261]
@@ -344,6 +346,152 @@ def run_route2(gsv, files_dir, out_dir):
     res.append("route2: z_producer=%.0fms dec=%d块 avg=%.0fms corr=%.4f out=%dB"
                % (t_zp, len(segs), t_dec / len(segs) * 1000, ca, audio.nbytes))
     return " | ".join(res)
+
+
+def run_route2_istft(gsv, files_dir, out_dir, f0_method="fcpe", brightness=0.0):
+    """iSTFT dec 块级。f0_method: fcpe(快) / rmvpe(与PC一致, 放最前绕切换坑) /
+    gf_ref(直接用 PC 参考输入 gf_* 跳过现场提取, 验证 z_producer+dec+istft 链路)。
+    T37 块窗 dec(R=12,B=13) 每块出 mag/phase -> numpy iSTFT -> 中间13帧拼接。
+    """
+    import json
+    from rvc_periphery import (hubert_blocks, mel_dlc, f0_decode, f0_to_coarse,
+                               pitch_embedding, sine_source, f0_uv_interp,
+                               _interp_nearest, istft_numpy, fcpe_decode,
+                               brightness_apply)
+    out_dir = _writable_dir(gsv, out_dir, files_dir)
+    p = files_dir
+    R, B = 12, 13
+    t0 = time.perf_counter()
+
+    if f0_method == "gf_ref":
+        # ---- 验证模式: 完全用 PC 参考输入, 跳过 hubert/f0 ----
+        phone_dlc = np.fromfile(os.path.join(p, "testdata", "gf_phone.bin"),
+                                np.float32).reshape(1, 768, 224)
+        pe = np.fromfile(os.path.join(p, "testdata", "gf_pitch_emb.bin"),
+                         np.float32).reshape(1, 192, 224)
+        sine = np.fromfile(os.path.join(p, "testdata", "gf_sine.bin"),
+                           np.float32).reshape(1, 1, 89600)
+        g = np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"),
+                        np.float32)
+        rnd = np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32)
+        tag = "gf_ref"
+        t_f0 = t_ph = 0.0
+    else:
+        # ---- 1. mel + f0 -> coarse -> pitch_emb / sine ----
+        audio = np.fromfile(os.path.join(p, "testdata", "gya_audio.raw"), np.float32)
+        mel_basis = np.fromfile(os.path.join(p, "periphery", "mel_basis.bin"),
+                                np.float32).reshape(128, 513)
+        mel_in = mel_dlc(audio, mel_basis)
+        if f0_method == "rmvpe":
+            gsv.init(os.path.join(p, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
+            o = _execute(gsv, {"input": np.ascontiguousarray(mel_in.reshape(-1))})
+            sal = np.asarray(list(o.values())[0]).reshape(256, 360)
+            f0 = f0_decode(sal, thred=0.03)
+        else:
+            gsv.init(os.path.join(p, "models", "fcpe_256.bin"), "fcpe_256")
+            cent_table = np.fromfile(os.path.join(p, "periphery", "cent_table.bin"),
+                                     np.float32)
+            o = _execute(gsv, {"mel": np.ascontiguousarray(mel_in[0].T.reshape(-1))})
+            latent = np.asarray(list(o.values())[0]).reshape(256, 360)
+            f0 = fcpe_decode(latent, cent_table, 0.006)
+        f0 = f0_uv_interp(f0)
+        # 轻中值平滑(窗口3): 去单帧抖动, 提升 dec 输出透亮度(对齐 PC 参考平滑)
+        _f0v = f0.copy()
+        for _i in range(f0.size):
+            _a, _b = max(0, _i - 1), min(f0.size, _i + 2)
+            _f0v[_i] = np.median(f0[_a:_b])
+        f0 = _f0v
+        coarse = f0_to_coarse(f0, 224)
+        emb = np.load(os.path.join(p, "periphery", "emb_params.npz"))
+        pe = pitch_embedding(coarse[None], emb["emb_pitch_weight"]).transpose(0, 2, 1)
+        params = json.load(open(os.path.join(p, "periphery", "sine_params.json")))
+        sine = sine_source(f0[:224].astype(np.float32)[None], params,
+                           seed=0, use_random=True).transpose(0, 2, 1)
+        t_f0 = (time.perf_counter() - t0) * 1000
+
+        # ---- 2. hubert 8 块 -> phone [1,768,224] NCW ----
+        gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
+                 "hubert_mix_def_t4800")
+        blocks, _ = hubert_blocks(audio)
+        feats = []
+        for b in blocks:
+            o = _execute(gsv, {"source": np.ascontiguousarray(b)})
+            feats.append(np.asarray(list(o.values())[0]).reshape(14, 768))
+        F50 = np.concatenate(feats, 0)[:112]
+        f = np.concatenate([F50, F50[-1:]], 0)
+        f100 = _interp_nearest(f, 2)[:224]
+        phone_dlc = f100.astype(np.float32)[None].transpose(0, 2, 1)
+        t_ph = (time.perf_counter() - t0) * 1000
+        g = np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32)
+        rnd = np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32)
+        tag = f0_method
+        # 现场 vs 参考 分段对比(定位差异段)
+        _gfp = np.fromfile(os.path.join(p, "testdata", "gf_phone.bin"), np.float32).reshape(1, 768, 224)
+        _gpe = np.fromfile(os.path.join(p, "testdata", "gf_pitch_emb.bin"), np.float32).reshape(1, 192, 224)
+        _gsi = np.fromfile(os.path.join(p, "testdata", "gf_sine.bin"), np.float32).reshape(1, 1, 89600)
+        _cp = np.corrcoef(phone_dlc.ravel(), _gfp.ravel())[0, 1]
+        _ce = np.corrcoef(pe.ravel(), _gpe.ravel())[0, 1]
+        _cs = np.corrcoef(sine.ravel(), _gsi.ravel())[0, 1]
+        print("[RVC-ISTFT] 现场vs参考(%s): phone=%.3f pe=%.3f sine=%.3f" % (tag, _cp, _ce, _cs), flush=True)
+
+    # ---- 3. gen: z_producer + T37 dec 块级 + numpy iSTFT ----
+    gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+    o = _execute(gsv, {
+        "phone": np.ascontiguousarray(phone_dlc.reshape(-1)),
+        "g": np.ascontiguousarray(g.reshape(-1)),
+        "pitch_emb": np.ascontiguousarray(pe.reshape(-1)),
+        "lengths": np.array([224], np.int32),
+        "rnd": np.ascontiguousarray(rnd.reshape(-1)),
+    })
+    z = np.asarray(list(o.values())[0]).reshape(1, 192, 224)
+    t_zp = (time.perf_counter() - t0) * 1000
+
+    gsv.init(os.path.join(p, "models",
+             "dec_distill_jielaide_4lvl_T37.sm8475.bin.bin"),
+             "dec_distill_jielaide_4lvl_T37")
+    zp = np.concatenate([np.repeat(z[:, :, :1], R, 2), z,
+                         np.repeat(z[:, :, -1:], R + B, 2)], 2)      # [1,192,261]
+    sp = np.concatenate([np.repeat(sine[:, :, :400], R, 2), sine,
+                         np.repeat(sine[:, :, -400:], R + B, 2)], 2)
+    segs, t_dec = [], 0.0
+    for s0 in range(0, 224, B):            # 18 blocks
+        lo, hi = s0, s0 + B + 2 * R
+        t1 = time.perf_counter()
+        outs = gsv.run({
+            "z": np.ascontiguousarray(zp[:, :, lo:hi].transpose(0, 2, 1).reshape(-1)),
+            "sine": np.ascontiguousarray(sp[:, :, lo * 400:hi * 400].reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1))})
+        t_dec += time.perf_counter() - t1
+        oo = list(outs.values())                 # [0]=mag [1]=phase
+        mag = np.asarray(oo[0]).ravel().astype(np.float32).reshape(1, 9, -1)
+        phase = np.asarray(oo[1]).ravel().astype(np.float32).reshape(1, 9, -1)
+        w = istft_numpy(mag, phase, 16, 4, length=37 * 400)[0, 0]
+        segs.append(w[R * 400:(R + B) * 400])
+    audio_out = np.concatenate(segs)[:224 * 400]
+    if brightness > 0:
+        audio_out = brightness_apply(audio_out, float(brightness))
+    audio_out.tofile(os.path.join(out_dir, "route2_istft_audio.raw"))
+    ref = np.fromfile(os.path.join(p, "testdata", "gya_ref_audio.raw"),
+                      np.float32).ravel()
+    n = min(audio_out.size, ref.size)
+    ca = np.corrcoef(audio_out[:n], ref[:n])[0, 1]
+    res = ("route2_istft(%s,b=%d): f0=%.0fms phone=%.0fms z_prod=%.0fms "
+           "dec=%d块 avg=%.0fms corr=%.4f out=%dB" % (
+        tag, int(round(brightness * 100)), t_f0, t_ph, t_zp, len(segs), t_dec / len(segs) * 1000, ca, audio_out.nbytes))
+    print("[RVC-ISTFT] " + res, flush=True)
+    return res
+
+
+def self_test_route2_istft(native_lib_dir, files_dir, uid, profile=False,
+                           out_dir="/sdcard/rvc_exp", f0_method="fcpe", brightness=0.0):
+    import traceback
+    try:
+        gsv = init(native_lib_dir, files_dir, uid, profile)
+        return run_route2_istft(gsv, files_dir, out_dir, f0_method, brightness)
+    except Exception:
+        tb = traceback.format_exc()
+        print("[RVC-ISTFT] EXC: %s" % tb, flush=True)
+        return "EXC: " + tb.replace(chr(10), " | ")
 
 
 def self_test_full(native_lib_dir, files_dir, uid, profile=False,
@@ -413,6 +561,91 @@ def _idx_v2(p):
     return _IDX_V2
 
 
+def _gen_newdec(gsv, p, phone_dlc, pe, sine, g, rnd):
+    """新 gen: z_producer 整窗出 z[1,192,224] + T37 dec 块级(R=12,B=13) 18块
+    -> mag/phase -> numpy iSTFT -> 中间13帧拼接 -> audio[1,1,89600]。"""
+    from rvc_periphery import istft_numpy
+    gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+    o = _execute(gsv, {
+        "phone": np.ascontiguousarray(phone_dlc.reshape(-1)),
+        "g": np.ascontiguousarray(g.reshape(-1)),
+        "pitch_emb": np.ascontiguousarray(pe.reshape(-1)),
+        "lengths": np.array([224], np.int32),
+        "rnd": np.ascontiguousarray(rnd.reshape(-1)),
+    })
+    z = np.asarray(list(o.values())[0]).reshape(1, 192, 224)
+    gsv.init(os.path.join(p, "models",
+             "dec_distill_jielaide_4lvl_T37.sm8475.bin.bin"),
+             "dec_distill_jielaide_4lvl_T37")
+    R, B = 12, 13
+    zp = np.concatenate([np.repeat(z[:, :, :1], R, 2), z,
+                         np.repeat(z[:, :, -1:], R + B, 2)], 2)
+    sp = np.concatenate([np.repeat(sine[:, :, :400], R, 2), sine,
+                         np.repeat(sine[:, :, -400:], R + B, 2)], 2)
+    segs_ = []
+    for s0 in range(0, 224, B):
+        lo, hi = s0, s0 + B + 2 * R
+        outs = gsv.run({
+            "z": np.ascontiguousarray(zp[:, :, lo:hi].transpose(0, 2, 1).reshape(-1)),
+            "sine": np.ascontiguousarray(sp[:, :, lo * 400:hi * 400].reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1))})
+        oo = list(outs.values())
+        mag = np.asarray(oo[0]).ravel().astype(np.float32).reshape(1, 9, -1)
+        phase = np.asarray(oo[1]).ravel().astype(np.float32).reshape(1, 9, -1)
+        w = istft_numpy(mag, phase, 16, 4, length=37 * 400)[0, 0]
+        segs_.append(w[R * 400:(R + B) * 400])
+    return np.concatenate(segs_)[:224 * 400]
+
+
+def _gen_stream_decshort(gsv, p, phone_dlc, pe, sine, g, rnd):
+    """T61 大窗流式: z_producer 每块滑窗(lengths=61, 61帧窗=12过去+37新+12未来)
+    -> 前61帧z -> dec_short_t61(顺序 z,g,sine) 块级 -> 中间37帧拼接。
+    dec 230ms/块 < 370ms 块音频 → 实时余量充足。"""
+    T, R, B = 224, 12, 37
+    WIN = R + B + R                    # 61 帧窗
+    # pad 首尾(R 帧边缘复制), 保证滑窗在界内
+    phone_pad = np.concatenate([np.repeat(phone_dlc[:, :, :1], R, 2), phone_dlc,
+                                np.repeat(phone_dlc[:, :, -1:], R + B, 2)], 2)  # [1,768,285]
+    pe_pad = np.concatenate([np.repeat(pe[:, :, :1], R, 2), pe,
+                             np.repeat(pe[:, :, -1:], R + B, 2)], 2)          # [1,192,285]
+    sine_pad = np.concatenate([np.repeat(sine[:, :, :400], R, 2), sine,
+                               np.repeat(sine[:, :, -400:], R + B, 2)], 2)    # [1,1,114000]
+    rnd2 = rnd.reshape(1, 224, 192)
+    rnd_pad = np.concatenate([np.repeat(rnd2[:, :1, :], R, 1), rnd2,
+                              np.repeat(rnd2[:, -1:, :], R + B, 1)], 1)       # [1,285,192]
+    # 1) 6 块 z_producer 滑窗
+    gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+    z_blocks = []
+    for s0 in range(0, T, B):
+        lo, hi = s0, s0 + WIN
+        pp = np.zeros((1, 768, T), np.float32); pp[:, :, :WIN] = phone_pad[:, :, lo:hi]
+        ee = np.zeros((1, 192, T), np.float32); ee[:, :, :WIN] = pe_pad[:, :, lo:hi]
+        rr = np.zeros((1, T, 192), np.float32); rr[0, :WIN, :] = rnd_pad[0, lo:hi]
+        o = _execute(gsv, {
+            "phone": np.ascontiguousarray(pp.reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1)),
+            "pitch_emb": np.ascontiguousarray(ee.reshape(-1)),
+            "lengths": np.array([WIN], np.int32),
+            "rnd": np.ascontiguousarray(rr.reshape(-1)),
+        })
+        z61 = np.asarray(list(o.values())[0]).reshape(1, 192, T)[:, :, :WIN]
+        z_blocks.append(z61)
+    # 2) 6 块 dec_short_t61(顺序 z,g,sine)
+    gsv.init(os.path.join(p, "models", "dec_short_t61.bin.bin"), "dec_short_T61")
+    segs = []
+    for i, s0 in enumerate(range(0, T, B)):
+        lo, hi = s0, s0 + WIN
+        z_in = np.ascontiguousarray(z_blocks[i].transpose(0, 2, 1).reshape(-1))
+        s_in = np.ascontiguousarray(sine_pad[:, :, lo * 400:hi * 400].reshape(-1))
+        o = _execute(gsv, {
+            "z": z_in,
+            "g": np.ascontiguousarray(g.reshape(-1)),
+            "sine": s_in})
+        a61 = np.asarray(list(o.values())[0]).ravel().astype(np.float32).reshape(WIN * 400)
+        segs.append(a61[R * 400:(R + B) * 400])
+    return np.concatenate(segs)[:T * 400]
+
+
 def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
                   f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
                   f0_method="rmvpe"):
@@ -466,7 +699,8 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
                        seed=0, use_random=True).transpose(0, 2, 1)
     _tm.append(("f0post", time.perf_counter()))
 
-    # ---- 2. hubert 8 块 → index_mix → protect → interp → phone ----
+        # ---- 2+3. 固定hop hubert(整段F50连续) + 整段phone(224帧,pad过去12) ----
+    #     + 块级 z_producer/dec_short_t61 + overlap-add 交叉淡化(消除接缝/顿挫)
     gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
              "hubert_mix_def_t4800")
     _tm.append(("ph:init", time.perf_counter()))
@@ -475,52 +709,244 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     for b in blocks:
         o = _execute(gsv, {"source": np.ascontiguousarray(b)})
         feats.append(np.asarray(list(o.values())[0]).reshape(14, 768))
-    F50 = np.concatenate(feats, 0)[:112]                    # [112,768]
+    F50 = np.concatenate(feats, 0)[:112]                    # [112,768] 固定hop连续
     _tm.append(("ph:hubert", time.perf_counter()))
     if index_rate > 0:
-        F50m = index_mix(F50, _idx_vecs_full(p), index_rate, v2=_idx_v2(p))  # 768精确+v2缓存
+        F50m = index_mix(F50, _idx_vecs_full(p), index_rate, v2=_idx_v2(p))
     else:
         F50m = F50
     _tm.append(("ph:idxmix", time.perf_counter()))
-    F50o = F50.copy() if protect < 0.5 else None            # 原始特征(protect 用)
-    f = np.concatenate([F50m, F50m[-1:]], 0)                # [113,768]
-    f100 = _interp_nearest(f, 2)[:224]                      # [224,768]
+    F50o = F50.copy() if protect < 0.5 else None
+    T, R, B, WIN = 224, 12, 37, 61
+    # 整段 phone(100Hz 224帧) + protect
+    idx_all = np.round(np.arange(T) / 2).astype(int).clip(0, 111)
+    f_all = F50m[idx_all].astype(np.float32)                # [224,768]
     if F50o is not None:
-        fo = np.concatenate([F50o, F50o[-1:]], 0)
-        f100o = _interp_nearest(fo, 2)[:224]
-        pitchff = np.full(224, protect, np.float32)         # 无声帧权重=protect
-        pitchff[f0[:224] > 0] = 1.0
-        f100 = f100 * pitchff[:, None] + f100o * (1 - pitchff[:, None])
-    phone_nwc = f100.astype(np.float32)
-    phone_dlc = phone_nwc[None].transpose(0, 2, 1)          # [1,768,224]
+        fo_all = F50o[idx_all]
+        pitchff = np.full(T, protect, np.float32)
+        pitchff[f0[:T] > 0] = 1.0
+        f_all = f_all * pitchff[:, None] + fo_all * (1 - pitchff[:, None])
+    phone_all = f_all[None].transpose(0, 2, 1)              # [1,768,224]
+    phone_pad = np.concatenate([np.repeat(phone_all[:, :, :1], R, 2),
+                                phone_all,
+                                np.repeat(phone_all[:, :, -1:], R + B, 2)], 2)  # [1,768,285]
     _tm.append(("phone", time.perf_counter()))
-
-    # ---- 3. gen ----
-    gsv.init(os.path.join(p, "models", "gen_fp32.bin"), "gen_fp32")
-    _tm.append(("gen:init", time.perf_counter()))
-    tensors = {
-        "phone": phone_dlc,
-        "pitch_emb": pe,
-        "phone_lengths": np.array([224], np.int32),
-        "rnd": np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32),
-        "speaker_emb": np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32),
-        "sine": sine,
-    }
-    _tm.append(("gen:tp", time.perf_counter()))
-    o = _execute(gsv, tensors)
-    out = np.asarray(list(o.values())[0]).ravel().astype(np.float32)
-    _tm.append(("gen", time.perf_counter()))
+    g = np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32)
+    rnd = np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32)
+    rnd2 = rnd.reshape(1, 224, 192)
+    # z/dec 需要的 pad(覆盖最后块窗到 283 帧)
+    sine_pad = np.concatenate([np.repeat(sine[:, :, :400], R, 2), sine,
+                               np.repeat(sine[:, :, -400:], R + B, 2)], 2)  # [1,1,114000]
+    pe_pad = np.concatenate([np.repeat(pe[:, :, :1], R, 2), pe,
+                             np.repeat(pe[:, :, -1:], R + B, 2)], 2)  # [1,192,285]
+    rnd_pad = np.concatenate([np.repeat(rnd2[:, :1, :], R, 1), rnd2,
+                              np.repeat(rnd2[:, -1:, :], R + B, 1)], 1)  # [1,285,192]
+    # overlap-add 拼接(交叉淡化消除接缝)
+    PAD0 = R * 400
+    total = T * 400 + PAD0 + (R + B) * 400                  # 114000
+    buf = np.zeros(total, np.float32)
+    wsum = np.zeros(total, np.float32)
+    ramp = 0.5 * (1 - np.cos(np.pi * np.arange(R * 400) / (R * 400)))  # 余弦淡入淡出(更平滑, 消除拐点)
+    t_dec_all = 0.0
+    for s0 in range(0, T, B):
+        # 窗 = pad后 [s0, s0+61] = 12过去 + 37新 + 12未来
+        pp = np.zeros((1, 768, T), np.float32); pp[:, :, :WIN] = phone_pad[:, :, s0:s0 + WIN]
+        ee = np.zeros((1, 192, T), np.float32); ee[:, :, :WIN] = pe_pad[:, :, s0:s0 + WIN]
+        rr = np.zeros((1, T, 192), np.float32); rr[0, :WIN, :] = rnd_pad[0, s0:s0 + WIN]
+        # z_producer — 每块前 init(幂等缓存)
+        gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+        o = _execute(gsv, {
+            "phone": np.ascontiguousarray(pp.reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1)),
+            "pitch_emb": np.ascontiguousarray(ee.reshape(-1)),
+            "lengths": np.array([WIN], np.int32),
+            "rnd": np.ascontiguousarray(rr.reshape(-1))})
+        z61 = np.asarray(list(o.values())[0]).reshape(1, 192, T)[:, :, :WIN]
+        # dec_short_t61 — 每块前 init
+        gsv.init(os.path.join(p, "models", "dec_short_t61.bin.bin"), "dec_short_T61")
+        t0 = time.perf_counter()
+        z_in = np.ascontiguousarray(z61.transpose(0, 2, 1).reshape(-1))
+        s_in = np.ascontiguousarray(sine_pad[:, :, s0 * 400:(s0 + WIN) * 400].reshape(-1))
+        o = _execute(gsv, {"z": z_in,
+                           "g": np.ascontiguousarray(g.reshape(-1)),
+                           "sine": s_in})
+        t_dec_all += time.perf_counter() - t0
+        a61 = np.asarray(list(o.values())[0]).ravel().astype(np.float32).reshape(WIN * 400)
+        # a61[k] 对应窗内帧 k; 窗0=s0 pad后, 新帧区(k=12..49)对应输出帧 s0..s0+37
+        base = (s0 - R) * 400 + PAD0
+        w = np.ones(WIN * 400, np.float32)
+        w[:R * 400] = ramp
+        w[(WIN - R) * 400:] = 1.0 - ramp
+        buf[base:base + WIN * 400] += a61 * w
+        wsum[base:base + WIN * 400] += w
+    out = (buf[PAD0:PAD0 + T * 400] /
+           np.maximum(wsum[PAD0:PAD0 + T * 400], 1e-6)).astype(np.float32)
+    _tm.append(("gen:stream", time.perf_counter()))
     if _STATE.get("profile"):
         try:
             od = _writable_dir(gsv, "/sdcard/rvc_exp", p)
             gsv.profile_dump(os.path.join(od, "live_gen_prof.jsonl"), 0, 0)
         except Exception:
             pass
-    # RVC GUI:rms_mix_rate RMS 包络混合(保留原声动态;1=纯输出不混合)
+# RVC GUI:rms_mix_rate RMS 包络混合(保留原声动态;1=纯输出不混合)
     if rms_mix_rate != 1:
         out = change_rms(audio, 16000, out, 40000, rms_mix_rate).astype(np.float32)
     _tm.append(("rms", time.perf_counter()))
     # 分段增量耗时(相对上一段)
+    last = t0
+    segs = []
+    for name, t in _tm[1:]:
+        segs.append("%s=%dms" % (name, (t - last) * 1000))
+        last = t
+    print("[RVC-T] %s TOTAL=%dms" % (" ".join(segs), (time.perf_counter() - t0) * 1000))
+    return out.tobytes()
+
+
+def process_stream_v2(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
+                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                      f0_method="rmvpe", f0_win=64):
+    """Step2 真流式核心(官方方式): f0 用 rmvpe 短窗逐块 + 滚动缓存(cache_pitch 思路)。
+    每块 f0_win 帧mel窗 = 过去(f0_win-37-12) + 当前37 + 未来12 → rmvpe → 当前块37帧 f0 + 未来12帧。
+    不需要整段 rmvpe256, 启动等 12 帧未来(300ms)即可; 其余(hubert/z/dec)复用 Step1 块级链。
+    f0_win=64(默认,过去15,手机~35ms/块,用户选定) 或 96(过去47,更稳~55ms/块)。
+    """
+    import json
+    from rvc_periphery import (hubert_blocks, hubert_blocks_at, mel_dlc, f0_decode, f0_to_coarse,
+                               pitch_embedding, sine_source, f0_uv_interp,
+                               change_rms, index_mix, _interp_nearest)
+    gsv = init(native_lib_dir, files_dir, uid, profile)
+    p = files_dir
+    audio = np.frombuffer(bytes(audio_bytes), np.float32)
+    t0 = time.perf_counter()
+    _tm = [t0]
+    mel_basis = np.fromfile(os.path.join(p, "periphery", "mel_basis.bin"),
+                            np.float32).reshape(128, 513)
+
+    # ---- 1. f0: rmvpe 短窗逐块 + 滚动缓存 ----
+    T, R, B, WIN = 224, 12, 37, 61
+    F0_POST = 12                                  # z/dec 未来帧(300ms)
+    F0_PRE = f0_win - B - F0_POST                 # 96->47, 64->15
+    gsv.init(os.path.join(p, "models", "rmvpe_fp32_%d.bin.bin" % f0_win),
+             "rmvpe_fp32_%d" % f0_win)
+    cache_f0 = np.zeros(T + F0_POST, np.float32)
+    for s0 in range(0, T - B + 1, B):
+        lo = (s0 - F0_PRE) * 160
+        hi = (s0 + B + F0_POST) * 160
+        seg = audio[max(0, lo):hi]
+        if len(seg) < hi - max(0, lo):
+            seg = np.pad(seg, (0, (hi - max(0, lo)) - len(seg)))
+        mel_in = mel_dlc(seg, mel_basis, n_frames=f0_win)   # [1,f0_win,128]
+        o = _execute(gsv, {"input": np.ascontiguousarray(mel_in.reshape(-1))})
+        sal = np.asarray(list(o.values())[0]).reshape(f0_win, 360)
+        f0w = f0_uv_interp(f0_decode(sal, thred=0.03))
+        cache_f0[s0:s0 + B] = f0w[F0_PRE:F0_PRE + B]                    # 当前块
+        if s0 + B + F0_POST <= len(cache_f0):
+            cache_f0[s0 + B:s0 + B + F0_POST] = f0w[F0_PRE + B:]        # 未来12
+    f0 = cache_f0[:T]
+    _tm.append(("f0:shortwin", time.perf_counter()))
+    f0 = f0_uv_interp(f0)
+    if f0_up_key != 0:
+        f0 = f0 * pow(2, f0_up_key / 12)
+    coarse = f0_to_coarse(f0, T)
+    emb = np.load(os.path.join(p, "periphery", "emb_params.npz"))
+    pe = pitch_embedding(coarse[None], emb["emb_pitch_weight"]).transpose(0, 2, 1)
+    params = json.load(open(os.path.join(p, "periphery", "sine_params.json")))
+    sine = sine_source(f0[:T].astype(np.float32)[None], params,
+                       seed=0, use_random=True).transpose(0, 2, 1)
+    _tm.append(("f0post", time.perf_counter()))
+
+    # ---- 2+3. hubert 块级增量 + phone 增量 + 块级 z/dec + overlap-add ----
+    gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
+             "hubert_mix_def_t4800")
+    nf50 = int(np.floor(len(audio) / 320))
+    F50m = np.zeros((nf50, 768), np.float32)
+    F50raw = np.zeros((nf50, 768), np.float32)
+    F50_mixed = np.zeros(nf50, np.bool_)
+    blk_done = 0
+    g = np.fromfile(os.path.join(p, "testdata", "gf_speaker_emb.bin"), np.float32)
+    rnd = np.fromfile(os.path.join(p, "testdata", "gf_rnd.bin"), np.float32)
+    rnd2 = rnd.reshape(1, 224, 192)
+    sine_pad = np.concatenate([np.repeat(sine[:, :, :400], R, 2), sine,
+                               np.repeat(sine[:, :, -400:], R + B, 2)], 2)
+    pe_pad = np.concatenate([np.repeat(pe[:, :, :1], R, 2), pe,
+                             np.repeat(pe[:, :, -1:], R + B, 2)], 2)
+    rnd_pad = np.concatenate([np.repeat(rnd2[:, :1, :], R, 1), rnd2,
+                              np.repeat(rnd2[:, -1:, :], R + B, 1)], 1)
+    PAD0 = R * 400
+    total = T * 400 + PAD0 + (R + B) * 400
+    buf = np.zeros(total, np.float32)
+    wsum = np.zeros(total, np.float32)
+    ramp = 0.5 * (1 - np.cos(np.pi * np.arange(R * 400) / (R * 400)))
+    for s0 in range(0, T, B):
+        # hubert 增量: 本 dec 窗(dec帧[s0-R, s0+48])需要 F50 帧 → 按需算 hubert 块
+        hi_f = int(np.ceil((s0 - R + WIN - 1) / 2))       # 需要覆盖的最大 F50 索引
+        need_f = min(hi_f, nf50 - 1)
+        need_blk = int(np.ceil((need_f + 1) / 14))
+        while blk_done < need_blk:
+            gsv.init(os.path.join(p, "models", "hubert_mix_def_t4800.bin"),
+                     "hubert_mix_def_t4800")       # 幂等激活(C 层停在最后 init 的 bin)
+            o = _execute(gsv, {"source": hubert_blocks_at(audio, blk_done)})
+            fb = np.asarray(list(o.values())[0]).reshape(14, 768)
+            b0 = blk_done * 14
+            F50raw[b0:b0 + 14] = fb
+            F50m[b0:b0 + 14] = fb
+            blk_done += 1
+        # index_mix 增量(逐帧独立,每帧只混一次)
+        if index_rate > 0:
+            iv = _idx_vecs_full(p)
+            iv2 = _idx_v2(p)
+            for j in range(need_f + 1):
+                if not F50_mixed[j]:
+                    F50m[j] = index_mix(F50m[j:j + 1], iv, index_rate, v2=iv2)[0]
+                    F50_mixed[j] = True
+        # 组装本 dec 窗 phone [1,768,WIN](dec帧→F50 取整, 与整段 idx_all 一致)
+        idxw = np.round((np.arange(s0 - R, s0 - R + WIN)) / 2.0).astype(int).clip(0, nf50 - 1)
+        fw = F50m[idxw].astype(np.float32)
+        if protect < 0.5:
+            fo = F50raw[idxw]
+            pff = np.full(WIN, protect, np.float32)
+            i0 = max(0, s0 - R)
+            f0seg = f0[i0:i0 + WIN]
+            pff[:len(f0seg)][f0seg > 0] = 1.0
+            fw = fw * pff[:, None] + fo * (1 - pff[:, None])
+        phone_w = fw[None].transpose(0, 2, 1)
+        # z/dec 块级
+        pp = np.zeros((1, 768, T), np.float32); pp[:, :, :WIN] = phone_w
+        ee = np.zeros((1, 192, T), np.float32); ee[:, :, :WIN] = pe_pad[:, :, s0:s0 + WIN]
+        rr = np.zeros((1, T, 192), np.float32); rr[0, :WIN, :] = rnd_pad[0, s0:s0 + WIN]
+        gsv.init(os.path.join(p, "models", "z_producer.bin.bin"), "z_producer")
+        o = _execute(gsv, {
+            "phone": np.ascontiguousarray(pp.reshape(-1)),
+            "g": np.ascontiguousarray(g.reshape(-1)),
+            "pitch_emb": np.ascontiguousarray(ee.reshape(-1)),
+            "lengths": np.array([WIN], np.int32),
+            "rnd": np.ascontiguousarray(rr.reshape(-1))})
+        z61 = np.asarray(list(o.values())[0]).reshape(1, 192, T)[:, :, :WIN]
+        gsv.init(os.path.join(p, "models", "dec_short_t61.bin.bin"), "dec_short_T61")
+        z_in = np.ascontiguousarray(z61.transpose(0, 2, 1).reshape(-1))
+        s_in = np.ascontiguousarray(sine_pad[:, :, s0 * 400:(s0 + WIN) * 400].reshape(-1))
+        o = _execute(gsv, {"z": z_in,
+                           "g": np.ascontiguousarray(g.reshape(-1)),
+                           "sine": s_in})
+        a61 = np.asarray(list(o.values())[0]).ravel().astype(np.float32).reshape(WIN * 400)
+        base = (s0 - R) * 400 + PAD0
+        w = np.ones(WIN * 400, np.float32)
+        w[:R * 400] = ramp
+        w[(WIN - R) * 400:] = 1.0 - ramp
+        buf[base:base + WIN * 400] += a61 * w
+        wsum[base:base + WIN * 400] += w
+    out = (buf[PAD0:PAD0 + T * 400] /
+           np.maximum(wsum[PAD0:PAD0 + T * 400], 1e-6)).astype(np.float32)
+    _tm.append(("gen:stream", time.perf_counter()))
+    if _STATE.get("profile"):
+        try:
+            od = _writable_dir(gsv, "/sdcard/rvc_exp", p)
+            gsv.profile_dump(os.path.join(od, "live_gen_prof.jsonl"), 0, 0)
+        except Exception:
+            pass
+    if rms_mix_rate != 1:
+        out = change_rms(audio, 16000, out, 40000, rms_mix_rate).astype(np.float32)
+    _tm.append(("rms", time.perf_counter()))
     last = t0
     segs = []
     for name, t in _tm[1:]:
@@ -539,6 +965,17 @@ def process_audio_ref(native_lib_dir, files_dir, uid, profile=False,
                         np.float32)
     return process_audio(native_lib_dir, files_dir, uid, audio.tobytes(), profile,
                          f0_up_key, rms_mix_rate, index_rate, protect, f0_method)
+
+
+def process_stream_v2_ref(native_lib_dir, files_dir, uid, profile=False,
+                          f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                          f0_method="rmvpe"):
+    """Step2 真流式模拟:打包参考音频(gya_audio.raw)走 process_stream_v2(rmvpe64 短窗 f0),
+    返回 40k 变声音频 bytes(AudioTrack 播放)。对比 Step1 整段 f0(process_audio_ref)。"""
+    audio = np.fromfile(os.path.join(files_dir, "testdata", "gya_audio.raw"),
+                        np.float32)
+    return process_stream_v2(native_lib_dir, files_dir, uid, audio.tobytes(), profile,
+                             f0_up_key, rms_mix_rate, index_rate, protect, f0_method)
 
 
 def preload_default(native_lib_dir, files_dir, uid, profile=False):
@@ -577,3 +1014,53 @@ def self_test(native_lib_dir, files_dir, uid, profile=False,
               out_dir="/sdcard/rvc_exp"):
     gsv = init(native_lib_dir, files_dir, uid, profile)
     return run_gen(gsv, files_dir, out_dir)
+
+
+# ---------------- RVCStream 真流式入口(Kotlin 实时 I/O 调用) ----------------
+# 全局单例: Kotlin 通过 stream_* 调用, 状态机常驻跨块(音频块逐步 push/输出)。
+_STREAM = None
+
+
+def stream_create(native_lib_dir, files_dir, uid, profile=False,
+                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                  f0_win=64, future=30):
+    """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。"""
+    global _STREAM
+    from rvc_stream import RVCStream
+    _STREAM = RVCStream(native_lib_dir, files_dir, uid, profile=profile,
+                        f0_up_key=f0_up_key, rms_mix_rate=rms_mix_rate,
+                        index_rate=index_rate, protect=protect,
+                        f0_win=f0_win, future=future)
+    return True
+
+
+def stream_push(audio_bytes):
+    """推入 16k fp32 音频块, 返回 40k fp32 输出段 bytes(可能为空)。"""
+    global _STREAM
+    if _STREAM is None:
+        raise RuntimeError("stream not created")
+    arr = np.frombuffer(bytes(audio_bytes), np.float32)
+    out = _STREAM.push(arr)
+    if out.size == 0:
+        return b""
+    return np.clip(out, -1.0, 1.0).astype(np.float32).tobytes()
+
+
+def stream_measure_latency(blocks=4):
+    """延迟自测: 合成音频推入, 返回稳态每块 T_proc(ms, -1=未创建)。"""
+    global _STREAM
+    if _STREAM is None:
+        return -1.0
+    try:
+        return float(_STREAM.measure_latency(blocks=blocks)["block_ms"])
+    except Exception as _e:
+        import traceback
+        traceback.print_exc()
+        return -2.0
+
+
+def stream_reset():
+    """重置状态机(释放旧实例, 下次 push 前需重建)。"""
+    global _STREAM
+    _STREAM = None
+    return True

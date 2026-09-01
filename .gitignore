@@ -8,6 +8,17 @@ android/*.iml
 android/app/.cxx/
 android/app/src/main/assets/*.tflite
 
+# Python cache / build
+__pycache__/
+*.pyc
+
+# Backups / temp
+*.orig
+*.bak_*.py
+
+# Model assets (huge, not versioned)
+android/app/src/main/assets/models/
+
 # OS / editor
 .DS_Store
 Thumbs.db

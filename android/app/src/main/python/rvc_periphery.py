@@ -48,6 +48,16 @@ def hubert_blocks(audio, blk=4800, hop=4480, fr=14, frame_hop=320):
             for k in range(nblocks)], nf50
 
 
+def hubert_blocks_at(audio, k, blk=4800, hop=4480):
+    """第 k 个 hubert 输入块(增量): audio[k*hop : k*hop+blk], 尾部 pad 到 blk。
+    与 hubert_blocks 的块窗完全一致(固定窗不滑), 供真流式按需逐块算 14 帧 F50。"""
+    start = k * hop
+    seg = audio[start:start + blk]
+    if len(seg) < blk:
+        seg = np.pad(seg, (0, blk - len(seg)))
+    return np.ascontiguousarray(seg, np.float32)
+
+
 # ---------------- f0 解码(salience → f0) ----------------
 def f0_decode(sal, thred=0.03):
     """rmvpe.decode + to_local_average_cents(numpy 复刻)。sal: [T,360] → f0 [T]"""
@@ -263,3 +273,55 @@ def sine_source(pitchf, params, seed=0, use_random=True):
     sine_merge = (sine_wavs @ w.T + b).reshape(1, T * upp, 1)
     sine_merge = np.tanh(sine_merge)
     return sine_merge.astype(np.float32)
+
+
+def _hann(n):
+    """n 点 Hann (非周期窗, 同 PC istft)。"""
+    return np.hanning(n + 1)[:n].astype(np.float32)
+
+
+def istft_numpy(mag, phase, istft_filter, istft_hop, length=None):
+    """纯 numpy iSTFT (OLA, np.bincount 折叠, 无需 BLAS)。同 newdec/istft_phone.py。
+    mag, phase: [B, n_bins, T_hop] float32 -> wav [B, 1, T_audio]。
+    用于 iSTFT dec(输出 mag/phase) 在手机 CPU 展开成波形。"""
+    mag = np.asarray(mag, dtype=np.float32)
+    phase = np.asarray(phase, dtype=np.float32)
+    B, n_bins, T_hop = mag.shape
+    n_fft = istft_filter
+    n_freq = n_fft // 2 + 1
+    assert n_bins == n_freq, "n_bins=%d n_freq=%d" % (n_bins, n_freq)
+    pad = n_fft // 2
+    spec = mag * np.exp(1j * phase)
+    spec_p = np.pad(spec, ((0, 0), (0, 0), (pad, pad)))
+    frames = np.fft.irfft(spec_p, n=n_fft, axis=1)
+    w = _hann(n_fft)
+    frames = frames * w[None, :, None]
+    Tp = frames.shape[-1]
+    y_len = (Tp - 1) * istft_hop + n_fft
+    idx = np.arange(Tp)[None, :] * istft_hop + np.arange(n_fft)[:, None]  # [n_fft, Tp]
+    w2 = (w * w)[:, None]
+    w2f = np.broadcast_to(w2, (n_fft, Tp))
+    out = np.zeros((B, y_len), dtype=np.float64)
+    for b in range(B):
+        y = np.bincount(idx.ravel(), weights=frames[b].ravel(), minlength=y_len)
+        ws = np.bincount(idx.ravel(), weights=w2f.ravel(), minlength=y_len)
+        out[b] = y[:y_len] / np.maximum(ws[:y_len], 1e-8)
+    out_len = T_hop * istft_hop if length is None else length
+    y_out = out[:, pad * istft_hop: pad * istft_hop + out_len]
+    return y_out[:, None, :].astype(np.float32)  # [B, 1, T_audio]
+def brightness_apply(x, amount=0.0):
+    """亮度/高频补偿: amount 0..1 (UI slider 0~100 -> /100)。
+    y = x + 0.5*amount*highpass(x); 一阶高通(alpha=0.85, ~2.4kHz@40k 拐点)。
+    默认 0 完全不变(泛用安全); 上限约 +3.5dB 高频增强, 不动低频。
+    """
+    if amount <= 0:
+        return np.asarray(x, np.float32)
+    alpha = np.float32(0.85)
+    x = np.asarray(x, np.float32)
+    hp = np.empty_like(x)
+    prev = np.float32(0.0)
+    hp[0] = np.float32(0.0)
+    for i in range(1, x.size):
+        prev = alpha * (prev + x[i] - x[i - 1])
+        hp[i] = prev
+    return x + np.float32(0.5 * amount) * hp
