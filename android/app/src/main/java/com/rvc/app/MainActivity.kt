@@ -593,7 +593,7 @@ class MainActivity : Activity() {
                 mod.callAttr(
                     "stream_create", nativeLibDir(), filesDir.absolutePath,
                     android.os.Process.myUid(), profile, key, rms, idx, prot, 64, 12)
-                val warmIn = ByteArray(5920 * 3 * 4)   // 3 块静音
+                val warmIn = ByteArray(17760 * 3 * 4)  // 3 块静音 @48k
                 val w0 = System.currentTimeMillis()
                 mod.callAttr("stream_push", warmIn)
                 log("预热完成(%.0fs), 重建状态机".format((System.currentTimeMillis() - w0) / 1000.0))
@@ -606,7 +606,7 @@ class MainActivity : Activity() {
                 // 录音线程
                 val recThread = Thread {
                     try {
-                        val srIn = 16000
+                        val srIn = 48000
                         val minBuf = AudioRecord.getMinBufferSize(
                             srIn, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT)
                         val rec = AudioRecord(MediaRecorder.AudioSource.MIC, srIn,
@@ -615,7 +615,7 @@ class MainActivity : Activity() {
                             log("LIVE FAIL: 录音初始化失败"); return@Thread
                         }
                         rec.startRecording()
-                        val chunk = 5920   // 370ms@16k
+                        val chunk = 17760  // 370ms@48k
                         val buf = FloatArray(chunk)
                         var nRead = 0; var nFull = 0; var nShort = 0
                         var lastShortR = 0
@@ -626,7 +626,7 @@ class MainActivity : Activity() {
                                 nRead++
                                 if (r == chunk) nFull++ else { nShort++; lastShortR = r }
                                 if (nRead % 30 == 0) {
-                                    log("录音: 30次read 满块=%d 短块=%d(最近短块r=%d/5920)".format(nFull, nShort, lastShortR))
+                                    log("录音: 30次read 满块=%d 短块=%d(最近短块r=%d/17760)".format(nFull, nShort, lastShortR))
                                     nFull = 0; nShort = 0
                                 }
                                 inQueue.put(if (r == chunk) buf else buf.copyOf(r))

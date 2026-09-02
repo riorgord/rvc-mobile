@@ -33,6 +33,7 @@ def _logcat(msg):
 from rvc_periphery import (mel_dlc, f0_decode, f0_to_coarse, pitch_embedding,
                            f0_uv_interp, hubert_blocks_at, index_mix,
                            _rms, interp_linear_1d)
+from df3_denoiser import DF3Denoiser
 
 
 def _causal_interp(f0):
@@ -49,16 +50,95 @@ def _causal_interp(f0):
     return out
 
 
+class TorchGateDenoiser:
+    """libtg.so 的 ctypes 封装: 块级流式 TorchGate 谱门控降噪。
+    输入 16k float 任意块, 内部累积到 BLOCK(默认 1600=100ms) 再处理,
+    不足一块的尾部缓存在 acc 中(引入 ≈BLOCK/sr 延迟)。
+    定案参数: sr=16k n_fft=640 hop=160(10ms) prop=0.5 n_std=1.5
+    freq_smooth=1000Hz time_smooth=150ms noise_percentile=0.3 ref=3s。
+    (2026-09: prop 0.7→0.5 + freq_smooth 500→1000 + time_smooth 50→150,
+     平滑增益谱减少谱门控音乐噪声/高频刺耳——见知乎《降噪算法中的音乐噪声问题》)。"""
+    def __init__(self, native_lib_dir, block=1600, sr=16000, n_fft=640, hop=160,
+                 prop_decrease=0.5, n_std=1.5, freq_smooth_hz=1000,
+                 time_smooth_ms=150, noise_percentile=0.3, ref_sec=3, cross=320):
+        import ctypes as ct
+        self._ct = ct
+        self.lib = ct.CDLL(os.path.join(native_lib_dir, "libtg.so"))
+        self.lib.tg_create.restype = ct.c_void_p
+        self.lib.tg_create.argtypes = [ct.c_int, ct.c_int, ct.c_int,
+                                       ct.c_float, ct.c_float,
+                                       ct.c_int, ct.c_int,
+                                       ct.c_float, ct.c_int]
+        self.h = self.lib.tg_create(sr, n_fft, hop,
+                                    ct.c_float(prop_decrease), ct.c_float(n_std),
+                                    freq_smooth_hz, time_smooth_ms,
+                                    ct.c_float(noise_percentile), ref_sec)
+        self.lib.tg_process.argtypes = [ct.c_void_p,
+                                        ct.POINTER(ct.c_float), ct.c_int,
+                                        ct.POINTER(ct.c_float)]
+        self.lib.tg_process.restype = None
+        self.lib.tg_destroy.argtypes = [ct.c_void_p]
+        self.BLOCK = block
+        self.CROSS = cross            # 块间交叉淡化区(默认 320=20ms), 消除块边界跳变
+        self.HOP = block - cross      # 每块实际推进(块间重叠 CROSS, 同一输入两版本 crossfade)
+        self._prev_tail = None        # 上一块末尾 CROSS 样本(处理版), 与当前块头混合
+        self.acc = np.zeros(0, np.float32)
+
+    def process(self, x16k):
+        """输入 16k float 块 → 降噪输出。块间重叠 CROSS(20ms): 同一输入在两块各重建一次,
+        边界交叉淡化消除跳变; 每块推进 HOP 样本, 长度守恒。不足一块时返回空。"""
+        x16k = np.asarray(x16k, np.float32)
+        if len(x16k) == 0:
+            return np.zeros(0, np.float32)
+        self.acc = np.concatenate([self.acc, x16k])
+        HOP, BLOCK, CROSS = self.HOP, self.BLOCK, self.CROSS
+        ramp = np.linspace(0.0, 1.0, CROSS, dtype=np.float32)
+        result = []
+        while len(self.acc) >= BLOCK:
+            blk = np.ascontiguousarray(self.acc[:BLOCK])
+            o = np.zeros(BLOCK, np.float32)
+            self.lib.tg_process(self.h,
+                                blk.ctypes.data_as(self._ct.POINTER(self._ct.c_float)),
+                                BLOCK,
+                                o.ctypes.data_as(self._ct.POINTER(self._ct.c_float)))
+            # 块间 crossfade: 上一块尾(同一输入的旧版) 与 当前块头 线性混合
+            if self._prev_tail is not None:
+                o[:CROSS] = self._prev_tail * (1.0 - ramp) + o[:CROSS] * ramp
+            self._prev_tail = o[BLOCK - CROSS:].copy()
+            result.append(o[:HOP])
+            self.acc = self.acc[HOP:]     # 推进 HOP, 保留 CROSS 重叠给下一块
+        return np.concatenate(result) if result else np.zeros(0, np.float32)
+
+    def flush(self):
+        """清空尾部: 跳过最后重叠区(已在上一块处理), 输出未处理尾部 + 最后一块的 CROSS 尾。"""
+        CROSS = self.CROSS
+        r = self.acc[CROSS:] if len(self.acc) > CROSS else np.zeros(0, np.float32)
+        if self._prev_tail is not None:
+            r = np.concatenate([r, self._prev_tail])
+            self._prev_tail = None
+        self.acc = np.zeros(0, np.float32)
+        return r
+
+    def close(self):
+        if self.h is not None:
+            self.lib.tg_destroy(self.h)
+            self.h = None
+
+
 class RVCStream:
     def __init__(self, native_lib_dir, files_dir, uid, profile=False,
                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
-                 f0_win=64, future=30, f0_smooth=3):
+                 f0_win=64, future=30, f0_smooth=3, denoise=True):
         """future: 启动/稳态未来(dec 帧, 默认30=300ms, 覆盖 hubert 块粒度 280ms)。
-        f0_smooth: f0_i 轻量滑动平均核宽(>1 启用, 降块边界/暂估跳变去"电"; 1=关)。"""
+        f0_smooth: f0_i 轻量滑动平均核宽(>1 启用, 降块边界/暂估跳变去"电"; 1=关)。
+        denoise: 输入侧 DeepFilterNet3 降噪(onnxruntime, 48k 直进 → 下采样 16k 给 RVC,
+                 压平稳底噪/治"嗡嗡声变声化", 替代旧 TorchGate 谱门控)。"""
         import rvc_api
         self._api = rvc_api
         self.p = files_dir
         self.gsv = rvc_api.init(native_lib_dir, files_dir, uid, profile)
+        # 输入侧降噪(DF3 onnxruntime: 48k 直进 → 16k 输出, 块级流式 +20ms lookahead)
+        self._den = DF3Denoiser(native_lib_dir, files_dir) if denoise else None
         # 常量
         self.T, self.R, self.B, self.WIN = 224, 12, 37, 61
         self.F0_POST = 12
@@ -111,22 +191,40 @@ class RVCStream:
         self._out_total = 0
         self._last_log = 0.0
         self._stage_ms = []   # 每块各环节耗时 (f0, hub, asm, zdec, misc) 秒
+        # debug 录音(临时定位用): files_dir/dump_on 存在才录三层, 定期批量写
+        #   dump_pre.raw  (降噪前 16k), dump_post.raw (降噪后 16k), dump_out.raw (变声输出 40k)
+        self._dump = os.path.exists(os.path.join(files_dir, "dump_on"))
+        self._dump_b = {"pre": np.zeros(0, np.float32),
+                        "post": np.zeros(0, np.float32),
+                        "out": np.zeros(0, np.float32)}
+        self._dump_last = 0.0
 
     # ---------------- 输入接口 ----------------
-    def push(self, audio_16k):
-        """追加 16k 音频, 处理所有可处理的块, 返回 40k 变声块(可能空)。
+    def push(self, audio_48k):
+        """追加 48k 音频(录音), 输入侧 DF3 降噪 → 下采样 16k → RVC 处理, 返回 40k 变声块(可能空)。
         LATLOG: 每秒打印一次当前实际延时(= 已输入秒 - 已输出秒, 反映时间堆积)。"""
-        audio_16k = np.asarray(audio_16k, np.float32)
-        self._in_total += len(audio_16k)
+        audio_48k = np.asarray(audio_48k, np.float32)
+        self._in_total += len(audio_48k)              # 原始输入(48k 计数, 延时统计含降噪缓存)
+        if self._dump:
+            self._dump_b["pre"] = np.concatenate([self._dump_b["pre"], audio_48k])
+        if self._den is not None:
+            audio_16k = self._den.process(audio_48k)  # DF3 降噪: 48k 直进 → 16k 输出(可能为空/20ms 缓冲)
+        else:
+            audio_16k = audio_48k[::3].copy()         # 无降噪: 48k→16k 直接抽取
+        if self._dump and len(audio_16k):
+            self._dump_b["post"] = np.concatenate([self._dump_b["post"], audio_16k])
         self.acc = np.concatenate([self.acc, audio_16k])
         outs = []
         while len(self.acc) >= (self.s0 + self.B + self.FUTURE) * 160:
             outs.append(self._process_block())
         out = np.concatenate(outs) if outs else np.zeros(0, np.float32)
+        if self._dump and len(out):
+            self._dump_b["out"] = np.concatenate([self._dump_b["out"], out])
+            self._dump_flush()
         self._out_total += len(out)
         now = time.time()
         if now - self._last_log >= 1.0:
-            in_s = self._in_total / 16000.0
+            in_s = self._in_total / 48000.0
             out_s = self._out_total / 40000.0
             lat = in_s - out_s
             print("[stream-lat] in=%.2fs out=%.2fs 实际延时=%.2fs (处理帧=%d)"
@@ -169,6 +267,18 @@ class RVCStream:
             self.buf = self.buf[cut:]
             self.wsum = self.wsum[cut:]
             self.out_base = keep_from
+
+    def _dump_flush(self):
+        """debug 录音: 每 3 秒把累积的三层音频批量追加写文件(避免每块 I/O)。"""
+        now = time.time()
+        if now - self._dump_last < 3.0:
+            return
+        for k, arr in self._dump_b.items():
+            if len(arr):
+                with open(os.path.join(self.p, "dump_%s.raw" % k), "ab") as fp:
+                    fp.write(arr.astype("<f4").tobytes())
+                self._dump_b[k] = np.zeros(0, np.float32)
+        self._dump_last = now
 
     # ---------------- f0(每块独立 64 窗, 与整段 cache_f0 一致) ----------------
     def _ensure_f0(self, s0):
@@ -427,4 +537,11 @@ class RVCStream:
         return {"block_ms": float(times.mean()), "steps": []}
 
     def close(self):
-        pass
+        if self._dump:
+            for k, arr in self._dump_b.items():
+                if len(arr):
+                    with open(os.path.join(self.p, "dump_%s.raw" % k), "ab") as fp:
+                        fp.write(arr.astype("<f4").tobytes())
+            self._dump_b = {k: np.zeros(0, np.float32) for k in self._dump_b}
+        if self._den is not None:
+            self._den.close()

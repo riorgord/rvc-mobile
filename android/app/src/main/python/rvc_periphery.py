@@ -152,12 +152,43 @@ def interp_linear_1d(x, out_len):
     return y
 
 
-def f0_uv_interp(f0):
-    """RVC:无声帧(f0==0)用邻近有声帧线性插值填充(np.interp)。"""
+def f0_uv_interp(f0, silence_frames=20, fade=3):
+    """RVC 邻近线性插值 + 长静音归零 + 边界渐变:
+    1) f0=0 的帧先用邻近有声值线性插值填充(RVC 官方逻辑);
+    2) 连续 unvoiced ≥ silence_frames(默认20=200ms@10ms/帧) 判定为停顿/静音 → 归零真静音,
+       治"停顿嗯嗯"(静音段被插值成非零 f0 → sine 持续振荡);
+    3) 归零段首/尾各 fade 帧(默认3=30ms) 用线性渐变过渡:
+       段尾从 0 渐升到段后有声值, 段首从段前有声值渐降到 0 →
+       避免"0→有声"硬阶跃(治刺耳), 兼顾嗯嗯与阶跃。"""
     uv = f0 == 0
-    if uv.any() and (~uv).any():
+    if uv.any():
         out = f0.copy()
-        out[uv] = np.interp(np.where(uv)[0], np.where(~uv)[0], f0[~uv])
+        if (~uv).any():
+            out[uv] = np.interp(np.where(uv)[0], np.where(~uv)[0], f0[~uv])
+        # 连续 unvoiced 游程 ≥ silence_frames 的段强制归零 + 边界渐变
+        idx = np.where(uv)[0]
+        if len(idx) > 0:
+            breaks = np.where(np.diff(idx) > 1)[0]
+            for run in np.split(idx, breaks + 1):
+                if len(run) >= silence_frames:
+                    r0, r1 = run[0], run[-1]
+                    out[run] = 0.0
+                    # 段尾淡入: r1 后 fade 帧, 从 0 渐升到段后有值
+                    if r1 + 1 < len(out):
+                        target = out[r1 + 1]
+                        for k in range(1, fade + 1):
+                            j = r1 + k
+                            if j >= len(out):
+                                break
+                            out[j] = target * k / (fade + 1)
+                    # 段首淡出: r0 前 fade 帧, 从段前值渐降到 0
+                    if r0 > 0:
+                        prev = out[r0 - 1]
+                        for k in range(1, fade + 1):
+                            j = r0 - k
+                            if j < 0:
+                                break
+                            out[j] = prev * (fade + 1 - k) / (fade + 1)
         return out
     return f0.copy()
 
