@@ -667,7 +667,7 @@ class MainActivity : Activity() {
                         val srOut = 40000
                         val minOut = AudioTrack.getMinBufferSize(
                             srOut, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
-                        var played = 0; var emptyCnt = 0
+                        var played = 0; var underrun = 0; var written = 0L
                         // 播放预填: "延迟预算(ms)" 框 → 预填块数(吸收处理突刺, 端到端延迟≈预算)
                         // budget 370→1块, 700→2块, 1110→3块... 每块=370ms@40k
                         val blkOut = 59200   // 370ms 一块 = 14800 采样 × 4B
@@ -690,19 +690,23 @@ class MainActivity : Activity() {
                             if (p == null) { if (!streamRunning) break else continue }
                             val pf = FloatArray(p.size / 4)
                             ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(pf)
-                            tr.write(pf, 0, pf.size, AudioTrack.WRITE_BLOCKING)
+                            written += tr.write(pf, 0, pf.size, AudioTrack.WRITE_BLOCKING)
                             preFilled++
                         }
                         log("播放: 预填 $preFilled 块(≈${preFilled * 370}ms 缓冲) 后 play")
                         tr.play()
                         while (streamRunning || outQueue.isNotEmpty()) {
                             val out = outQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS)
-                            if (out == null) { emptyCnt++; continue }
+                            if (out == null) {
+                                // 真欠播:AudioTrack 内部已无可播数据才 +1(队列空但缓冲区有货不算)
+                                if (written - tr.getPlaybackHeadPosition() <= 0) underrun++
+                                continue
+                            }
                             val outF = FloatArray(out.size / 4)
                             ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
-                            tr.write(outF, 0, outF.size, AudioTrack.WRITE_BLOCKING)
+                            written += tr.write(outF, 0, outF.size, AudioTrack.WRITE_BLOCKING)
                             played++
-                            if (played % 10 == 0) log("播放: %d段 空等%d次 队列%d".format(played, emptyCnt, outQueue.size))
+                            if (played % 10 == 0) log("播放: %d段 欠播%d次 队列%d".format(played, underrun, outQueue.size))
                         }
                         tr.stop(); tr.release()
                     } catch (e: Throwable) { log("播放线程: " + e) }
