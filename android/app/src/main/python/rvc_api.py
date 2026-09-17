@@ -561,6 +561,49 @@ def _idx_v2(p):
     return _IDX_V2
 
 
+_IVF_CACHE = {}
+
+
+def _ivf_cent768(p):
+    """IVF 簇中心 [K,768] fp32。"""
+    if "cent" not in _IVF_CACHE:
+        _IVF_CACHE["cent"] = np.fromfile(
+            os.path.join(p, "periphery", "ivf_cent768.bin"), np.float32).reshape(-1, 768)
+    return _IVF_CACHE["cent"]
+
+
+def _ivf_members(p):
+    """IVF 簇成员全局行号(按簇排序)[N] int32。"""
+    if "members" not in _IVF_CACHE:
+        _IVF_CACHE["members"] = np.fromfile(
+            os.path.join(p, "periphery", "ivf_members.bin"), np.int32)
+    return _IVF_CACHE["members"]
+
+
+def _ivf_offsets(p):
+    """IVF 簇偏移 [K+1] int32。"""
+    if "offsets" not in _IVF_CACHE:
+        _IVF_CACHE["offsets"] = np.fromfile(
+            os.path.join(p, "periphery", "ivf_offsets.bin"), np.int32)
+    return _IVF_CACHE["offsets"]
+
+
+def _ivf_cent2(p):
+    """IVF 簇中心平方和 [K] fp32。"""
+    if "cent2" not in _IVF_CACHE:
+        _IVF_CACHE["cent2"] = np.fromfile(
+            os.path.join(p, "periphery", "ivf_cent2.bin"), np.float32)
+    return _IVF_CACHE["cent2"]
+
+
+def _idx_mix_ivf(feats, p, rate, k=8, m=2):
+    """768 精确空间的迷你 IVF index_mix(批量/流式共用)。"""
+    from rvc_periphery import index_mix_ivf
+    return index_mix_ivf(feats, _idx_vecs_full(p), _ivf_cent768(p),
+                         _ivf_members(p), _ivf_offsets(p), _ivf_cent2(p),
+                         _idx_v2(p), rate, k=k, m=m)
+
+
 def _gen_newdec(gsv, p, phone_dlc, pe, sine, g, rnd):
     """新 gen: z_producer 整窗出 z[1,192,224] + T37 dec 块级(R=12,B=13) 18块
     -> mag/phase -> numpy iSTFT -> 中间13帧拼接 -> audio[1,1,89600]。"""
@@ -647,7 +690,7 @@ def _gen_stream_decshort(gsv, p, phone_dlc, pe, sine, g, rnd):
 
 
 def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
-                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                  f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                   f0_method="rmvpe"):
     """M2 实时链路入口:内存 16k fp32 音频(bytes) → 40k fp32 变声音频(bytes)。
     完整 RVC 推理:mel→rmvpe/fcpe→f0(uv插值+变调)→index音色混合→protect→phone
@@ -712,7 +755,7 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
     F50 = np.concatenate(feats, 0)[:112]                    # [112,768] 固定hop连续
     _tm.append(("ph:hubert", time.perf_counter()))
     if index_rate > 0:
-        F50m = index_mix(F50, _idx_vecs_full(p), index_rate, v2=_idx_v2(p))
+        F50m = _idx_mix_ivf(F50, p, index_rate)
     else:
         F50m = F50
     _tm.append(("ph:idxmix", time.perf_counter()))
@@ -803,7 +846,7 @@ def process_audio(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
 
 
 def process_stream_v2(native_lib_dir, files_dir, uid, audio_bytes, profile=False,
-                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                      f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                       f0_method="rmvpe", f0_win=64):
     """Step2 真流式核心(官方方式): f0 用 rmvpe 短窗逐块 + 滚动缓存(cache_pitch 思路)。
     每块 f0_win 帧mel窗 = 过去(f0_win-37-12) + 当前37 + 未来12 → rmvpe → 当前块37帧 f0 + 未来12帧。
@@ -891,14 +934,19 @@ def process_stream_v2(native_lib_dir, files_dir, uid, audio_bytes, profile=False
             F50raw[b0:b0 + 14] = fb
             F50m[b0:b0 + 14] = fb
             blk_done += 1
-        # index_mix 增量(逐帧独立,每帧只混一次)
+        # index_mix 增量(连续未混帧批量 IVF)
         if index_rate > 0:
-            iv = _idx_vecs_full(p)
-            iv2 = _idx_v2(p)
-            for j in range(need_f + 1):
-                if not F50_mixed[j]:
-                    F50m[j] = index_mix(F50m[j:j + 1], iv, index_rate, v2=iv2)[0]
-                    F50_mixed[j] = True
+            j = 0
+            while j <= need_f:
+                if j < F50_mixed.shape[0] and not F50_mixed[j]:
+                    j2 = j
+                    while j2 <= need_f and j2 < F50_mixed.shape[0] and not F50_mixed[j2]:
+                        j2 += 1
+                    F50m[j:j2] = _idx_mix_ivf(F50m[j:j2], p, index_rate)
+                    F50_mixed[j:j2] = True
+                    j = j2
+                else:
+                    j += 1
         # 组装本 dec 窗 phone [1,768,WIN](dec帧→F50 取整, 与整段 idx_all 一致)
         idxw = np.round((np.arange(s0 - R, s0 - R + WIN)) / 2.0).astype(int).clip(0, nf50 - 1)
         fw = F50m[idxw].astype(np.float32)
@@ -957,7 +1005,7 @@ def process_stream_v2(native_lib_dir, files_dir, uid, audio_bytes, profile=False
 
 
 def process_audio_ref(native_lib_dir, files_dir, uid, profile=False,
-                      f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                      f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                       f0_method="rmvpe"):
     """模拟实时:打包参考音频(gya_audio.raw)走 process_audio 完整实时链路,
     返回 40k 变声音频 bytes(AudioTrack 播放)。用于对比 麦克风 vs 参考音频。"""
@@ -968,7 +1016,7 @@ def process_audio_ref(native_lib_dir, files_dir, uid, profile=False,
 
 
 def process_stream_v2_ref(native_lib_dir, files_dir, uid, profile=False,
-                          f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                          f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                           f0_method="rmvpe"):
     """Step2 真流式模拟:打包参考音频(gya_audio.raw)走 process_stream_v2(rmvpe64 短窗 f0),
     返回 40k 变声音频 bytes(AudioTrack 播放)。对比 Step1 整段 f0(process_audio_ref)。"""
@@ -1019,13 +1067,16 @@ def self_test(native_lib_dir, files_dir, uid, profile=False,
 # ---------------- RVCStream 真流式入口(Kotlin 实时 I/O 调用) ----------------
 # 全局单例: Kotlin 通过 stream_* 调用, 状态机常驻跨块(音频块逐步 push/输出)。
 _STREAM = None
+# 实时调试统计(截幅诊断): 原始输入峰值/削波数 + 输出硬clip前峰值/超1.0数
+_DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
 
 
 def stream_create(native_lib_dir, files_dir, uid, profile=False,
-                  f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                  f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                   f0_win=64, future=30):
     """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。"""
-    global _STREAM
+    global _STREAM, _DBG
+    _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
     from rvc_stream import RVCStream
     _STREAM = RVCStream(native_lib_dir, files_dir, uid, profile=profile,
                         f0_up_key=f0_up_key, rms_mix_rate=rms_mix_rate,
@@ -1036,14 +1087,30 @@ def stream_create(native_lib_dir, files_dir, uid, profile=False,
 
 def stream_push(audio_bytes):
     """推入 16k fp32 音频块, 返回 40k fp32 输出段 bytes(可能为空)。"""
-    global _STREAM
+    global _STREAM, _DBG
     if _STREAM is None:
         raise RuntimeError("stream not created")
     arr = np.frombuffer(bytes(audio_bytes), np.float32)
+    if arr.size:
+        a = np.abs(arr)
+        _DBG["in_peak"] = max(_DBG["in_peak"], float(np.max(a)))
+        _DBG["in_clip"] += int(np.sum(a >= 0.999))
     out = _STREAM.push(arr)
     if out.size == 0:
         return b""
+    o = np.abs(out)
+    _DBG["out_peak"] = max(_DBG["out_peak"], float(np.max(o)))
+    _DBG["out_clip"] += int(np.sum(o > 1.0))
     return np.clip(out, -1.0, 1.0).astype(np.float32).tobytes()
+
+
+def stream_debug_snapshot():
+    """实时截幅诊断快照: 原始输入峰值/削波数 + 输出硬clip前峰值/超1.0数(字符串)。"""
+    if _STREAM is None:
+        return ""
+    d = _DBG
+    return ("in_peak=%.3f in_clip=%d out_peak=%.3f out_clip=%d"
+            % (d["in_peak"], d["in_clip"], d["out_peak"], d["out_clip"]))
 
 
 def stream_measure_latency(blocks=4):

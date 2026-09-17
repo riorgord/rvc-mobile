@@ -209,7 +209,7 @@ def _rms(y, frame_length, hop_length):
     return np.sqrt(sums / frame_length)
 
 
-def change_rms(inp, sr1, out, sr2, rate=0.25):
+def change_rms(inp, sr1, out, sr2, rate=0.75):
     """RVC change_rms:输出 RMS 包络按 (1-rate) 拉向输入(保留原声动态)。
     inp [T1] fp32(16k), out [T2] fp32(40k), rate=输出占比(默认 0.25)。"""
     rms1 = _rms(inp, frame_length=sr1 // 2 * 2, hop_length=sr1 // 2)
@@ -217,7 +217,7 @@ def change_rms(inp, sr1, out, sr2, rate=0.25):
     n = len(out)
     rms1i = interp_linear_1d(rms1, n)
     rms2i = interp_linear_1d(rms2, n)
-    rms2i = np.maximum(rms2i, 1e-6)
+    rms2i = np.maximum(rms2i, 1e-3)   # 官方实时版下限 1e-3,防输出过小声时增益爆炸
     return out * (np.power(rms1i, 1.0 - rate) * np.power(rms2i, rate - 1.0))
 
 
@@ -252,6 +252,36 @@ def index_mix(feats, idx_vecs, rate, k=8, proj=None, idx_full=None, v2=None):
         npy = np.sum(idx_vecs[part] * w[:, :, None], axis=1)    # [T,D]
     # RVC: feats = npy*index_rate + (1-index_rate)*feats (index 占比=rate)
     return (npy * rate + feats * (1.0 - rate)).astype(np.float32)
+
+
+def index_mix_ivf(feats, idx_full, cent, members, offsets, cent2, idx2,
+                  rate, k=8, m=2):
+    """迷你 IVF 版 index_mix:先在 768 维原空间比簇中心,再在最近 m 个簇内精确 top-k。
+    输出与 index_mix(768 精确)几乎一致(corr~1.0),搜索量大减。
+    feats [T,768]; idx_full [N,768]; cent [K,768]; members/offsets 为簇成员表;
+    cent2 [K] 簇中心平方和; idx2 [N] 索引向量平方和(缓存)。"""
+    T = feats.shape[0]
+    f2 = np.sum(feats * feats, axis=1, keepdims=True)          # [T,1]
+    d_cent = f2 + cent2[None, :] - 2.0 * (feats @ cent.T)      # [T,K]
+    mm = min(m, cent.shape[0])
+    top_m = np.argpartition(d_cent, mm - 1, axis=1)[:, :mm]    # [T,m]
+    out = np.empty_like(feats)
+    for t in range(T):
+        cs = top_m[t]
+        cand = np.unique(np.concatenate(
+            [members[offsets[c]:offsets[c + 1]] for c in cs]))
+        if len(cand) < k:                                       # 极少数空簇兜底
+            cand = np.arange(idx_full.shape[0])
+        d2 = f2[t, 0] + idx2[cand] - 2.0 * (feats[t] @ idx_full[cand].T)
+        kk = min(k, len(cand))
+        part = np.argpartition(d2, kk - 1)[:kk]
+        top = cand[part]
+        score = -d2[part]
+        w = np.square(1.0 / (score + 1e-6))
+        w /= w.sum()
+        npy = np.sum(idx_full[top] * w[:, None], axis=0)
+        out[t] = npy * rate + feats[t] * (1.0 - rate)
+    return out.astype(np.float32)
 
 
 # ---------------- 查表 / sine ----------------

@@ -32,7 +32,7 @@ def _logcat(msg):
 
 from rvc_periphery import (mel_dlc, f0_decode, f0_to_coarse, pitch_embedding,
                            f0_uv_interp, hubert_blocks_at, index_mix,
-                           _rms, interp_linear_1d)
+                           index_mix_ivf, _rms, interp_linear_1d)
 from df3_denoiser import DF3Denoiser
 
 
@@ -127,7 +127,7 @@ class TorchGateDenoiser:
 
 class RVCStream:
     def __init__(self, native_lib_dir, files_dir, uid, profile=False,
-                 f0_up_key=0, rms_mix_rate=0.25, index_rate=0.75, protect=0.33,
+                 f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                  f0_win=64, future=30, f0_smooth=3, denoise=True):
         """future: 启动/稳态未来(dec 帧, 默认30=300ms, 覆盖 hubert 块粒度 280ms)。
         f0_smooth: f0_i 轻量滑动平均核宽(>1 启用, 降块边界/暂估跳变去"电"; 1=关)。
@@ -331,20 +331,22 @@ class RVCStream:
             self.blk_done += 1
         if self.index_rate > 0 and need_f >= 0:
             if self._iv is None:
-                self._iv = self._api._idx_vecs_full(self.p)   # 768 混合
-                self._ivd = self._api._idx_vecs(self.p)       # 256 搜索(快3x)
-                self._proj = self._api._proj_mat(self.p)      # 768->256 投影
-                self._iv2 = None
-            # 批量 index_mix(降维搜索): 连续未 mixed 帧段一次调用
+                self._iv = self._api._idx_vecs_full(self.p)      # 768 混合
+                self._iv_cent = self._api._ivf_cent768(self.p)
+                self._iv_members = self._api._ivf_members(self.p)
+                self._iv_offsets = self._api._ivf_offsets(self.p)
+                self._iv_cent2 = self._api._ivf_cent2(self.p)
+                self._iv2 = self._api._idx_v2(self.p)            # 768 索引平方和缓存
+            # 批量 index_mix(768 空间 IVF): 连续未 mixed 帧段一次调用
             j = 0
             while j <= need_f:
                 if j < self.F50_mixed.shape[0] and not self.F50_mixed[j]:
                     j2 = j
                     while j2 <= need_f and j2 < self.F50_mixed.shape[0] and not self.F50_mixed[j2]:
                         j2 += 1
-                    self.F50m[j:j2] = index_mix(self.F50m[j:j2], self._ivd,
-                                                self.index_rate, proj=self._proj,
-                                                idx_full=self._iv, v2=self._iv2)
+                    self.F50m[j:j2] = index_mix_ivf(
+                        self.F50m[j:j2], self._iv, self._iv_cent, self._iv_members,
+                        self._iv_offsets, self._iv_cent2, self._iv2, self.index_rate)
                     self.F50_mixed[j:j2] = True
                     j = j2
                 else:
@@ -481,7 +483,7 @@ class RVCStream:
         rms1 = _rms(self.acc[lo1:hi1], sr1, sr1 // 2)
         rms2 = _rms(self._out_hist, sr2, sr2 // 2)
         g1 = interp_linear_1d(rms1, seg_len)
-        g2 = np.maximum(interp_linear_1d(rms2, seg_len), 1e-6)
+        g2 = np.maximum(interp_linear_1d(rms2, seg_len), 1e-3)   # 官方实时版下限 1e-3,防增益爆炸
         return (np.power(g1, 1.0 - r) * np.power(g2, r - 1.0)).astype(np.float32)
 
     def _output_segment(self, s0):

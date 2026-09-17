@@ -108,7 +108,7 @@ class MainActivity : Activity() {
             setOnClickListener { runLatencyTest() }
         }
         budgetInput = EditText(this).apply {
-            setText(prefs.getString("latency_budget_ms", "370"))
+            setText(prefs.getString("latency_budget_ms", "1110"))
             hint = "延迟预算(ms)"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER
             setPadding(16, 0, 16, 0)
@@ -131,7 +131,7 @@ class MainActivity : Activity() {
             setPadding(16, 0, 16, 0)
         }
         rmsInput = EditText(this).apply {
-            setText("0.25")
+            setText("0.75")
             hint = "rms_mix_rate"
             inputType = android.text.InputType.TYPE_CLASS_NUMBER or
                 android.text.InputType.TYPE_NUMBER_FLAG_DECIMAL
@@ -418,7 +418,7 @@ class MainActivity : Activity() {
     private fun runSim() {
         val profile = profSwitch.isChecked
         val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
+        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
         val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
         val f0m = f0Spinner.selectedItem.toString()
@@ -482,7 +482,7 @@ class MainActivity : Activity() {
             return
         }
         val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
+        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
         val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
         val f0m = f0Spinner.selectedItem.toString()
@@ -543,7 +543,7 @@ class MainActivity : Activity() {
     private fun runLatencyTest() {
         val profile = profSwitch.isChecked
         val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
+        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
         log("测延迟 (key=%d rms=%.2f idx=0 prot=%.2f)…".format(key, rms, prot))
         Thread {
@@ -576,7 +576,7 @@ class MainActivity : Activity() {
         if (streamRunning) { log("实时流式已在运行, 再按一次停止"); return }
         val profile = profSwitch.isChecked
         val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.25f
+        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
         val idx = idxInput.text.toString().toFloatOrNull() ?: 0.0f
         val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
         val budget = budgetInput.text.toString().toIntOrNull() ?: 370
@@ -593,14 +593,10 @@ class MainActivity : Activity() {
                 mod.callAttr(
                     "stream_create", nativeLibDir(), filesDir.absolutePath,
                     android.os.Process.myUid(), profile, key, rms, idx, prot, 64, 12)
-                val warmIn = ByteArray(17760 * 3 * 4)  // 3 块静音 @48k
+                val warmIn = ByteArray(17760 * 6 * 4)  // 6 块静音 @48k
                 val w0 = System.currentTimeMillis()
                 mod.callAttr("stream_push", warmIn)
-                log("预热完成(%.0fs), 重建状态机".format((System.currentTimeMillis() - w0) / 1000.0))
-                mod.callAttr("stream_reset")
-                mod.callAttr(
-                    "stream_create", nativeLibDir(), filesDir.absolutePath,
-                    android.os.Process.myUid(), profile, key, rms, idx, prot, 64, 12)
+                log("预热完成(%.0fs), 保持状态机直接进实时".format((System.currentTimeMillis() - w0) / 1000.0))
                 val inQueue = java.util.concurrent.LinkedBlockingQueue<FloatArray>()
                 val outQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
                 // 录音线程
@@ -644,7 +640,7 @@ class MainActivity : Activity() {
                         var recent = java.util.ArrayList<Long>()
                         var gaps = java.util.ArrayList<Long>()
                         while (streamRunning || inQueue.isNotEmpty()) {
-                            val f = inQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
+                            val f = inQueue.poll(1, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
                             val now = System.currentTimeMillis()
                             gaps.add(now - last); last = now
                             val inBytes = ByteArray(f.size * 4)
@@ -711,8 +707,18 @@ class MainActivity : Activity() {
                         tr.stop(); tr.release()
                     } catch (e: Throwable) { log("播放线程: " + e) }
                 }
-                recThread.start(); procThread.start(); playThread.start()
-                recThread.join(); procThread.join(); playThread.join()
+                // 实时截幅诊断: 每秒打一次输入/输出峰值与削波数(上屏 + logcat)
+                val dbgThread = Thread {
+                    while (streamRunning) {
+                        try {
+                            val s = mod.callAttr("stream_debug_snapshot").toString()
+                            if (s.isNotBlank()) log("[dbg] " + s)
+                        } catch (_: Throwable) {}
+                        Thread.sleep(1000)
+                    }
+                }
+                recThread.start(); procThread.start(); playThread.start(); dbgThread.start()
+                recThread.join(); procThread.join(); playThread.join(); dbgThread.join()
                 log("实时流式结束")
             } catch (e: Throwable) {
                 log("LIVE STREAM FAIL: " + e)

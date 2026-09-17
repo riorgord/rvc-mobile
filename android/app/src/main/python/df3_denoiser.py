@@ -136,11 +136,12 @@ class DF3Denoiser:
         if len(x48k) == 0:
             return np.zeros(0, np.float32)
         self.acc = np.concatenate([self.acc, x48k])
-        if len(self.acc) < NEEDED:
-            return np.zeros(0, np.float32)
-        blk = self.acc[:NEEDED]              # 9120
-        self.acc = self.acc[BLOCK48:]        # 保留 1440 (下块前480 + 未来960)
-        return self._process_block(blk)      # 返回 2560 (16k)
+        outs = []
+        while len(self.acc) >= NEEDED:
+            blk = self.acc[:NEEDED]              # 9120
+            self.acc = self.acc[BLOCK48:]        # 保留 1440 (下块前480 + 未来960)
+            outs.append(self._process_block(blk))  # 每块 2560 (16k)
+        return np.concatenate(outs) if outs else np.zeros(0, np.float32)
 
     def _process_block(self, x48):
         """x48: (9120,) 48k = 前480 + 7680 本块 + 960 lookahead → 输出 2560 (16k)"""
