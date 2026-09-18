@@ -1,0 +1,18 @@
+RVC App - 实时变声机架
+========================
+
+本项目包含来自 GlassMic (https://github.com/Xposed-Modules-Repo/io.mo.glassmic)
+的代码,该部分以 GNU General Public License v3.0 (GPL-3.0) 授权。
+
+GlassMic 版权声明(按 GPL-3.0 要求保留):
+  GlassMic - 虚拟麦克风与 Android 音频链路测试模块
+  (c) GlassMic 作者及贡献者,仓库见上方链接。
+  本作品基于 GPL-3.0 发布。
+
+因此,本项目整体以 GPL-3.0 授权发布(包含本 NOTICE 与根目录 LICENSE)。
+若您修改或再分发本项目,必须:
+  - 保留本 NOTICE 与 LICENSE;
+  - 以 GPL-3.0 开源您的修改;
+  - 注明对 GlassMic 代码的修改之处。
+
+其余为本项目自研部分(RVC 引擎、UI、注入整合),随本项目一并按 GPL-3.0 提供。

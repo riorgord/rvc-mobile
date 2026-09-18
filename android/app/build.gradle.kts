@@ -6,12 +6,12 @@ plugins {
 
 android {
     namespace = "com.rvc.app"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.rvc.app"
-        minSdk = 26
-        targetSdk = 34
+        minSdk = 29
+        targetSdk = 35
         versionCode = 1
         versionName = "0.1"
 
@@ -56,4 +56,6 @@ chaquopy {
 
 dependencies {
     // 里程碑 0 极简:仅 Chaquopy 运行时(插件自动注入)
+    // P0 注入核心:LSPosed API 101(compileOnly,运行时由框架提供)
+    compileOnly("io.github.libxposed:api:101.0.1")
 }

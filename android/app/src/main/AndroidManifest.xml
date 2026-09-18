@@ -10,9 +10,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <!-- 前台服务:防 MIUI 冻结(QNN 长任务,冻结即失败) -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14+ 麦克风前台服务类型 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <!-- M2 实时变声:麦克风采集 + 音频输出 -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- 常驻通知(MIUI 防杀) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 注入侧包可见性(Android 11+ 目标 App 需要能看到我们的 Provider) -->
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
 
     <application
         android:label="RVC App"
@@ -20,6 +26,18 @@
         android:extractNativeLibs="true"
         android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
+
+        <!-- LSPosed 模块识别(P0:API 101) -->
+        <meta-data
+            android:name="xposedmodule"
+            android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="RVC 实时变声机架(集成 GlassMic 注入核心)" />
+        <meta-data
+            android:name="xposedminversion"
+            android:value="101" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -28,5 +46,30 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- P0 调试控制:adb 开关全局接管 -->
+        <receiver
+            android:name=".RackCommandReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.rvc.app.action.RACK" />
+            </intent-filter>
+        </receiver>
+
+        <!-- 运行态决策 Provider(注入侧查询) -->
+        <provider
+            android:name="io.mo.glassmic.provider.RuntimeProvider"
+            android:authorities="com.rvc.app.provider.runtime"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
+        <!-- PCM 管道 Provider(注入侧读变声后音频) -->
+        <provider
+            android:name="io.mo.glassmic.provider.PcmStreamProvider"
+            android:authorities="com.rvc.app.provider.pcm"
+            android:exported="true"
+            android:grantUriPermissions="true" />
+
     </application>
+
 </manifest>
