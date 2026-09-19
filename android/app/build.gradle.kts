@@ -6,7 +6,8 @@ plugins {
 
 android {
     namespace = "com.rvc.app"
-    compileSdk = 35
+    compileSdk = 36
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "com.rvc.app"
@@ -18,6 +19,33 @@ android {
         ndk {
             abiFilters += listOf("arm64-v8a")
         }
+
+        externalNativeBuild {
+            cmake {
+                cppFlags += listOf(
+                    "-std=c++17",
+                    "-fvisibility=hidden",
+                    "-fvisibility-inlines-hidden",
+                    "-fno-exceptions",
+                    "-fno-rtti",
+                    "-Wall"
+                )
+                arguments += listOf(
+                    "-DANDROID_STL=c++_static"
+                )
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
+    buildFeatures {
+        prefab = true
     }
 
     buildTypes {
@@ -31,6 +59,11 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // shadowhook 的 .so 会同时从项目与 shadowhook AAR 两条路径进来,内容一致,取其一
+            pickFirsts += setOf(
+                "**/libshadowhook.so",
+                "**/libshadowhook_nothing.so"
+            )
         }
     }
 
@@ -55,7 +88,14 @@ chaquopy {
 }
 
 dependencies {
-    // 里程碑 0 极简:仅 Chaquopy 运行时(插件自动注入)
     // P0 注入核心:LSPosed API 101(compileOnly,运行时由框架提供)
     compileOnly("io.github.libxposed:api:101.0.1")
+    // 动态作用域:App 进程通过 XposedService 向 LSPosed 申请目标包作用域。
+    // service:101.0.0 要求 compileSdk 36;102.0.0 要求 37(本机 SDK/AGP 装不了),先用 101。
+    // 它自带 kotlin-stdlib 2.2 会把项目 1.9 冲掉,这里排除,统一用项目 stdlib。
+    implementation("io.github.libxposed:service:101.0.0") {
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+    }
+    // native AAudio/OpenSL hook
+    implementation("com.bytedance.android:shadowhook:1.0.10")
 }

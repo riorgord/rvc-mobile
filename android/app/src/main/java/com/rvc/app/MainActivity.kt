@@ -21,7 +21,11 @@ import android.widget.Switch
 import android.widget.TextView
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
+import io.mo.glassmic.core.model.SourceType
+import io.mo.glassmic.provider.PcmTestSource
+import io.mo.glassmic.provider.RackState
 import java.io.File
+import kotlin.concurrent.thread
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -51,6 +55,55 @@ class MainActivity : Activity() {
     @Volatile private var streamRunning = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("rvc_prefs", MODE_PRIVATE) }
+
+    /** P0 测试:循环把哔哔声灌进虚拟麦克风;再按一次停止恢复真麦。 */
+    private fun runRackTest() {
+        val path = "/sdcard/Download/glassmic_test.wav"
+        if (PcmTestSource.isActive()) {
+            PcmTestSource.stop()
+            RackState.enabled = false
+            RackState.source = SourceType.REAL_MIC
+            log("已停止注入,恢复真麦直通")
+            return
+        }
+        if (!File(path).exists()) {
+            log("测试音不存在: $path")
+            return
+        }
+        val ok = PcmTestSource.start(path, loop = true)
+        if (!ok) {
+            log("测试音加载失败")
+            return
+        }
+        RackState.enabled = true
+        RackState.source = SourceType.FILE
+        log("哔哔循环注入中…去录音机录,再按此按钮停止")
+    }
+
+    /** 通过 LSPosed 动态作用域申请把 [pkg] 加进模块作用域(会弹授权) */
+    private fun requestScope(pkg: String) {
+        log("申请作用域: $pkg")
+        LsposedScopeManager.requestScope(pkg) { result ->
+            runOnUiThread {
+                when (result) {
+                    is ScopeRequestResult.Granted ->
+                        log("✅ 已授权 $pkg (重启目标 App 后生效)")
+                    is ScopeRequestResult.Failed ->
+                        log("❌ 授权失败 $pkg: ${result.error}")
+                    is ScopeRequestResult.Unsupported ->
+                        log("⚠️ LSPosed 服务未连接,无法申请")
+                }
+            }
+        }
+    }
+
+    private fun updateScopeStatus(tv: TextView, scope: List<String>?) {
+        tv.text = if (scope == null) {
+            "LSPosed 服务:未连接"
+        } else {
+            "LSPosed 服务:已连接\n作用域:${scope.joinToString(",")}"
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -106,6 +159,10 @@ class MainActivity : Activity() {
         val testLatBtn = Button(this).apply {
             text = "测延迟"
             setOnClickListener { runLatencyTest() }
+        }
+        val rackTestBtn = Button(this).apply {
+            text = "循环注入哔(再按停)"
+            setOnClickListener { runRackTest() }
         }
         budgetInput = EditText(this).apply {
             setText(prefs.getString("latency_budget_ms", "1110"))
@@ -246,6 +303,70 @@ class MainActivity : Activity() {
             addView(paramCell("延迟预算(ms) 实时需<=370", budgetInput), w)
             addView(streamBtn, w)
         }
+        val rowRack = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(rackTestBtn, w)
+        }
+
+        // ---- 动态作用域:LSPosed API 102 XposedService ----
+        val scopeStatus = TextView(this).apply {
+            text = "LSPosed 服务:未连接"
+            textSize = 12f
+            setPadding(0, 12, 0, 0)
+        }
+        val scopeInput = EditText(this).apply {
+            setText("com.tencent.mm")
+            hint = "包名"
+            setPadding(16, 0, 16, 0)
+        }
+        val scopeBtn = Button(this).apply {
+            text = "申请"
+            setOnClickListener {
+                val pkg = scopeInput.text.toString().trim()
+                if (pkg.isBlank()) {
+                    log("包名为空")
+                    return@setOnClickListener
+                }
+                requestScope(pkg)
+            }
+        }
+        val wxBtn = Button(this).apply {
+            text = "微信"
+            setOnClickListener { requestScope("com.tencent.mm") }
+        }
+        val qqBtn = Button(this).apply {
+            text = "QQ"
+            setOnClickListener { requestScope("com.tencent.mobileqq") }
+        }
+        val syncScopeBtn = Button(this).apply {
+            text = "刷新作用域"
+            setOnClickListener {
+                val s = LsposedScopeManager.syncScope()
+                updateScopeStatus(scopeStatus, s)
+                log("当前作用域: ${s?.joinToString(",") ?: "null"}")
+            }
+        }
+        LsposedScopeManager.ensureRegistered(this)
+        LsposedScopeManager.setOnBindChange { bound ->
+            runOnUiThread {
+                val s = LsposedScopeManager.frameworkScope
+                updateScopeStatus(scopeStatus, if (bound) s else null)
+            }
+        }
+        val rowScopeInput = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(scopeInput, w)
+            addView(scopeBtn, w)
+        }
+        val rowScopeQuick = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(wxBtn, w)
+            addView(qqBtn, w)
+            addView(syncScopeBtn, w)
+        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -258,6 +379,10 @@ class MainActivity : Activity() {
             addView(rowBright)
             addView(rowLatency)
             addView(rowStream)
+            addView(rowRack)
+            addView(scopeStatus)
+            addView(rowScopeInput)
+            addView(rowScopeQuick)
             addView(f0Progress)
             addView(scroll, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))

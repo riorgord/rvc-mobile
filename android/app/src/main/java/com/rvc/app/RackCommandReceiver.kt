@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import io.mo.glassmic.core.model.SourceType
+import io.mo.glassmic.provider.PcmTestSource
 import io.mo.glassmic.provider.RackState
 
 /**
@@ -19,11 +20,19 @@ class RackCommandReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_RACK) return
         if (intent.hasExtra(EXTRA_ENABLED)) {
-            RackState.enabled = intent.getBooleanExtra(EXTRA_ENABLED, false)
-        }
-        intent.getStringExtra(EXTRA_SOURCE)?.let { name ->
-            runCatching { SourceType.valueOf(name) }.getOrNull()?.let {
-                RackState.source = it
+            val enabled = intent.getBooleanExtra(EXTRA_ENABLED, false)
+            RackState.enabled = enabled
+            val srcName = intent.getStringExtra(EXTRA_SOURCE)
+            val src = srcName?.let { runCatching { SourceType.valueOf(it) }.getOrNull() } ?: SourceType.REAL_MIC
+            RackState.source = src
+            if (enabled && src == SourceType.FILE) {
+                if (!PcmTestSource.isActive()) {
+                    PcmTestSource.start("/sdcard/Download/glassmic_test.wav", loop = true)
+                }
+            } else {
+                PcmTestSource.stop()
+                if (enabled) RackState.source = src
+                else RackState.source = SourceType.REAL_MIC
             }
         }
     }

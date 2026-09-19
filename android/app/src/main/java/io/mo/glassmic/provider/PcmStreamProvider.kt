@@ -15,9 +15,8 @@ import kotlin.concurrent.thread
  *   content://com.rvc.app.provider.pcm/stream?sr=48000&ch=1
  *   openFileDescriptor(uri, "r") → 返回 pipe 读端
  *
- * P0:注入侧音源是 SILENCE(舒适噪声在 hook 进程本地填充),本管道暂时不被读;
- * 这里先实现一个"持续写舒适噪声"的兜底实现,保证任何情况下 open 都不会挂起,
- * 也给 P1 的 RVC 出流(写真 PCM)留好位置。
+ * P0:注入侧音源是 FILE(PcmTestSource)或 SILENCE(舒适噪声在 hook 进程本地填充)。
+ * 这里按请求的 sr/ch 对源做重采样,并以 20ms 实时节流写管道,尽量模拟真麦克风节奏。
  */
 class PcmStreamProvider : ContentProvider() {
 
@@ -31,16 +30,29 @@ class PcmStreamProvider : ContentProvider() {
         val pipe = ParcelFileDescriptor.createPipe()
         val readSide = pipe[0]
         val writeSide = pipe[1]
+        android.util.Log.i(
+            "GlassMic-Runtime",
+            "PcmStream.open sr=$sampleRate ch=$channels caller=$callingPackage " +
+                "src=${PcmTestSource.sourceSampleRate}/${PcmTestSource.sourceChannels}"
+        )
 
-        // 兜底写线程:PCM16 LE 舒适噪声,按请求 sr/ch 持续写,直到写端被关闭。
+        // 写线程:按目标 sr/ch 重采样 + 20ms 实时节流,模拟真麦克风。
         thread(name = "rvc-pcm-writer", isDaemon = true) {
-            val bytesPerFrame = channels.coerceAtLeast(1) * 2
-            val buf = ByteArray(1920 * bytesPerFrame) // 20ms@48k mono
+            val targetFrameBytes = channels.coerceAtLeast(1) * 2
+            val chunkFrames = (sampleRate.coerceAtLeast(1) * 20 / 1000).coerceAtLeast(1)
+            val buf = ByteArray(chunkFrames * targetFrameBytes)
             try {
                 val out = ParcelFileDescriptor.AutoCloseOutputStream(writeSide)
                 while (true) {
-                    ComfortNoise.fillBytes(buf, 0, buf.size)
-                    out.write(buf)
+                    val n = PcmTestSource.fillResampled(buf, 0, buf.size, sampleRate, channels)
+                    if (n > 0) {
+                        out.write(buf, 0, n)
+                    } else {
+                        ComfortNoise.fillBytes(buf, 0, buf.size)
+                        out.write(buf)
+                    }
+                    // 真麦节奏:20ms 一帧
+                    runCatching { Thread.sleep(20) }
                 }
             } catch (_: Throwable) {
                 // 写端关闭(消费方 EOF)即正常结束

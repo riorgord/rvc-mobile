@@ -32,6 +32,11 @@ class RuntimeProvider : ContentProvider() {
         } else {
             RackState.resolve(pkg)
         }
+        // P0 调试:看哪些进程来查、拿到什么决策
+        android.util.Log.i(
+            "GlassMic-Runtime",
+            "resolve pkg=$pkg -> $source (enabled=${RackState.enabled} src=${RackState.source})"
+        )
         val c = MatrixCursor(arrayOf("source"))
         c.addRow(arrayOf(source.name))
         return c
