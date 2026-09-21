@@ -1,6 +1,7 @@
 package com.rvc.app
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -188,6 +189,10 @@ class MainActivity : Activity() {
                 log("HAL 桥接启动: 已连 socket,去微信发语音测试")
             }
         }
+        val modBtn = Button(this).apply {
+            text = "安装/更新 HAL 模块"
+            setOnClickListener { installHalModule() }
+        }
         fun paramCell(label: String, edit: EditText): LinearLayout {
             return LinearLayout(this).apply {
                 orientation = LinearLayout.VERTICAL
@@ -264,6 +269,7 @@ class MainActivity : Activity() {
             orientation = LinearLayout.HORIZONTAL
             val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             addView(halBtn, w)
+            addView(modBtn, w)
         }
 
         // ---- 角色/共享件管理 ----
@@ -698,6 +704,93 @@ class MainActivity : Activity() {
             false
         }
     }
+
+    private fun runSu(cmd: String): Pair<Int, String> {
+        return try {
+            val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
+            val out = p.inputStream.bufferedReader().readText()
+            val rc = p.waitFor()
+            rc to out
+        } catch (t: Throwable) {
+            -1 to ""
+        }
+    }
+
+    private fun hasRoot(): Boolean {
+        val (rc, out) = runSu("id")
+        return rc == 0 && out.contains("uid=0")
+    }
+
+    private fun moduleInstalledVersion(): String? {
+        val (rc, out) = runSu("grep '^version=' /data/adb/modules/rvc_virtual_mic_hal/module.prop 2>/dev/null")
+        if (rc != 0) return null
+        return out.trim().removePrefix("version=").ifBlank { null }
+    }
+
+    private fun copyBundledModuleZip(): File? {
+        return try {
+            val dir = getExternalFilesDir(null) ?: filesDir
+            val f = File(dir, "rvc_module.zip")
+            assets.open("rvc_module.zip").use { input ->
+                f.outputStream().use { output -> input.copyTo(output) }
+            }
+            f
+        } catch (t: Throwable) {
+            null
+        }
+    }
+
+    private fun installHalModule() {
+        thread {
+            log("① 检查 root…")
+            if (!hasRoot()) {
+                log("✗ 未获得 root 授权:请先在 Magisk/KernelSU 中允许本应用")
+                return@thread
+            }
+            log("✓ root 正常")
+            val cur = moduleInstalledVersion()
+            log(if (cur != null) "当前模块版本: $cur" else "未检测到已装模块")
+            log("② 解出内置模块包…")
+            val zip = copyBundledModuleZip()
+            if (zip == null) {
+                log("✗ 内置模块包读取失败")
+                return@thread
+            }
+            log("✓ 已解出: ${zip.absolutePath}")
+            log("③ 执行 magisk --install-module …")
+            var (rc, out) = runSu("magisk --install-module \"${zip.absolutePath}\"")
+            if (rc == 0) {
+                log("✓ Magisk 安装成功")
+            } else {
+                log("magisk 失败(rc=$rc),试 ksud module install …\n$out")
+                val (rc2, out2) = runSu("ksud module install \"${zip.absolutePath}\"")
+                if (rc2 == 0) {
+                    rc = 0
+                    log("✓ KernelSU 安装成功")
+                } else {
+                    log("✗ KernelSU 也失败(rc=$rc2)\n$out2")
+                }
+            }
+            if (rc != 0) {
+                log("✗ 自动安装失败,请用 Magisk 应用手动刷 rvc_module.zip")
+                return@thread
+            }
+            log("④ 安装/更新已提交,重启后生效")
+            handler.post { showRebootDialog() }
+        }
+    }
+
+    private fun showRebootDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("HAL 模块已更新")
+            .setMessage("重启后新的 HAL 模块才会生效。现在重启吗?")
+            .setPositiveButton("立即重启") { _, _ ->
+                thread { runSu("reboot") }
+            }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
+
 
 
     private fun pickFile(req: Int) {
