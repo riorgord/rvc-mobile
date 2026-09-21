@@ -128,15 +128,16 @@ class TorchGateDenoiser:
 class RVCStream:
     def __init__(self, native_lib_dir, files_dir, uid, profile=False,
                  f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
-                 f0_win=64, future=30, f0_smooth=3, denoise=True):
+                 f0_win=64, future=30, f0_smooth=3, denoise=True, role_dir=None):
         """future: 启动/稳态未来(dec 帧, 默认30=300ms, 覆盖 hubert 块粒度 280ms)。
         f0_smooth: f0_i 轻量滑动平均核宽(>1 启用, 降块边界/暂估跳变去"电"; 1=关)。
         denoise: 输入侧 DeepFilterNet3 降噪(onnxruntime, 48k 直进 → 下采样 16k 给 RVC,
-                 压平稳底噪/治"嗡嗡声变声化", 替代旧 TorchGate 谱门控)。"""
+                 压平稳底噪/治"嗡嗡声变声化", 替代旧 TorchGate 谱门控)。
+        role_dir: 角色包解压根目录;None = 全从 files_dir 读(旧行为)。"""
         import rvc_api
         self._api = rvc_api
         self.p = files_dir
-        self.gsv = rvc_api.init(native_lib_dir, files_dir, uid, profile)
+        self.gsv = rvc_api.init(native_lib_dir, files_dir, uid, profile, role_dir=role_dir)
         # 输入侧降噪(DF3 onnxruntime: 48k 直进 → 16k 输出, 块级流式 +20ms lookahead)
         self._den = DF3Denoiser(native_lib_dir, files_dir) if denoise else None
         # 常量
@@ -157,8 +158,8 @@ class RVCStream:
         self.emb = np.load(os.path.join(files_dir, "periphery", "emb_params.npz"))
         with open(os.path.join(files_dir, "periphery", "sine_params.json")) as fp:
             self.sine_params = json.load(fp)
-        self.g = np.fromfile(os.path.join(files_dir, "testdata", "gf_speaker_emb.bin"), np.float32)
-        self.rnd = np.fromfile(os.path.join(files_dir, "testdata", "gf_rnd.bin"), np.float32)
+        self.g = np.fromfile(self._api._loc(files_dir, "testdata/gf_speaker_emb.bin"), np.float32)
+        self.rnd = np.fromfile(self._api._loc(files_dir, "testdata/gf_rnd.bin"), np.float32)
         self.rnd2 = self.rnd.reshape(1, 224, 192)
         # index 缓存
         self._iv = None
@@ -467,7 +468,7 @@ class RVCStream:
             # FIX: 长序列循环复用 rnd(di%224), 不钉死 223; 负帧用 0
             idx = 0 if di < 0 else (di % 224)
             rr[0, k, :] = self.rnd2[0, idx, :]
-        self.gsv.init(os.path.join(self.p, "models", "z_producer.bin.bin"), "z_producer")
+        self.gsv.init(self._api._loc(self.p, "models/z_producer.bin.bin"), "z_producer")
         o = self._api._execute(self.gsv, {
             "phone": np.ascontiguousarray(pp.reshape(-1)),
             "g": np.ascontiguousarray(self.g.reshape(-1)),
@@ -475,7 +476,7 @@ class RVCStream:
             "lengths": np.array([self.WIN], np.int32),
             "rnd": np.ascontiguousarray(rr.reshape(-1))})
         z61 = np.asarray(list(o.values())[0]).reshape(1, 192, self.T)[:, :, :self.WIN]
-        self.gsv.init(os.path.join(self.p, "models", "dec_short_t61.bin.bin"), "dec_short_T61")
+        self.gsv.init(self._api._loc(self.p, "models/dec_short_t61.bin.bin"), "dec_short_T61")
         z_in = np.ascontiguousarray(z61.transpose(0, 2, 1).reshape(-1))
         s_in = np.ascontiguousarray(sine_w.reshape(-1))
         o = self._api._execute(self.gsv, {"z": z_in,

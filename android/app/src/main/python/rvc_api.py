@@ -13,7 +13,28 @@ from gsv_api import Gsv
 
 _STATE = {}
 
+# 当前激活角色目录(角色包解压后的根目录)。None = 旧行为(全部文件从 files_dir 读)。
+# 角色件(models/*.bin.bin、testdata/gf_*、periphery/索引)优先从这里读；
+# 共享件(hubert/rmvpe/fcpe/df3r、mel/emb/sine/cent_table/proj)不在角色包里，
+# _loc 自动回退到 files_dir。
+_ROLE_DIR = None
+
 _TYPE_DT = {0x32: np.int32, 0x64: np.int64, 0x216: np.float16, 0x232: np.float32}
+
+
+def set_role_dir(d):
+    """设置/清除当前角色目录(None = 清除,回退 files_dir 全量)。"""
+    global _ROLE_DIR
+    _ROLE_DIR = d
+
+
+def _loc(base, rel):
+    """角色件优先从 role_dir 读,否则回退 base(files_dir)。rel 用正斜杠相对路径。"""
+    if _ROLE_DIR:
+        cand = os.path.join(_ROLE_DIR, *rel.split("/"))
+        if os.path.isfile(cand):
+            return cand
+    return os.path.join(base, *rel.split("/"))
 
 
 def _preload(lib_dir):
@@ -35,10 +56,13 @@ def _preload(lib_dir):
                 pass
 
 
-def init(native_lib_dir, files_dir, uid, profile=False):
+def init(native_lib_dir, files_dir, uid, profile=False, role_dir=None):
     """幂等初始化:env(三件套) + 预加载 + libgsv_qnn.so 绑定。
+    role_dir: 当前角色包解压根目录;None 表示旧行为(全从 files_dir 读)。
     profile=True → QnnProfile 采集,结果可 profile_dump 到 /sdcard/rvc_exp。
     注意:GSV_NOPROFILE 由 libgsv_qnn.so 加载时缓存 → 切换 profiling 需重启 App 生效。"""
+    if role_dir:
+        set_role_dir(role_dir)
     if _STATE.get("gsv") is not None:
         # 幂等早退也同步 profile 状态:profile=true 一旦设过就保持(true 优先)
         # (GSV_NOPROFILE 是 libgsv 加载时缓存 → 真正生效需冷启动;这里保 _STATE 供 dump)
@@ -533,7 +557,7 @@ def _proj_mat(p):
     """通用随机投影矩阵 768→256(固定种子,与数据无关;换模型/角色复用)。"""
     if "proj" not in _PROJ_CACHE:
         _PROJ_CACHE["proj"] = np.fromfile(
-            os.path.join(p, "periphery", "proj.bin"), np.float32).reshape(768, 256)
+            _loc(p, "periphery/proj.bin"), np.float32).reshape(768, 256)
     return _PROJ_CACHE["proj"]
 
 
@@ -541,7 +565,7 @@ def _idx_vecs(p):
     """降维搜索库(256 维):L2 最近邻搜索用(53MB)。"""
     if "idx" not in _IDX_CACHE:
         _IDX_CACHE["idx"] = np.fromfile(
-            os.path.join(p, "periphery", "idx256.bin"), np.float32).reshape(-1, 256)
+            _loc(p, "periphery/idx256.bin"), np.float32).reshape(-1, 256)
     return _IDX_CACHE["idx"]
 
 
@@ -549,7 +573,7 @@ def _idx_vecs_full(p):
     """原始混合库(768 维):最近邻命中后取原始向量加权混合,输出 768 维喂 gen。"""
     if "idx_full" not in _IDX_CACHE:
         _IDX_CACHE["idx_full"] = np.fromfile(
-            os.path.join(p, "periphery", "naiqiawang_idx.bin"), np.float32).reshape(-1, 768)
+            _loc(p, "periphery/naiqiawang_idx.bin"), np.float32).reshape(-1, 768)
     return _IDX_CACHE["idx_full"]
 
 
@@ -568,7 +592,7 @@ def _ivf_cent768(p):
     """IVF 簇中心 [K,768] fp32。"""
     if "cent" not in _IVF_CACHE:
         _IVF_CACHE["cent"] = np.fromfile(
-            os.path.join(p, "periphery", "ivf_cent768.bin"), np.float32).reshape(-1, 768)
+            _loc(p, "periphery/ivf_cent768.bin"), np.float32).reshape(-1, 768)
     return _IVF_CACHE["cent"]
 
 
@@ -576,7 +600,7 @@ def _ivf_members(p):
     """IVF 簇成员全局行号(按簇排序)[N] int32。"""
     if "members" not in _IVF_CACHE:
         _IVF_CACHE["members"] = np.fromfile(
-            os.path.join(p, "periphery", "ivf_members.bin"), np.int32)
+            _loc(p, "periphery/ivf_members.bin"), np.int32)
     return _IVF_CACHE["members"]
 
 
@@ -584,7 +608,7 @@ def _ivf_offsets(p):
     """IVF 簇偏移 [K+1] int32。"""
     if "offsets" not in _IVF_CACHE:
         _IVF_CACHE["offsets"] = np.fromfile(
-            os.path.join(p, "periphery", "ivf_offsets.bin"), np.int32)
+            _loc(p, "periphery/ivf_offsets.bin"), np.int32)
     return _IVF_CACHE["offsets"]
 
 
@@ -592,7 +616,7 @@ def _ivf_cent2(p):
     """IVF 簇中心平方和 [K] fp32。"""
     if "cent2" not in _IVF_CACHE:
         _IVF_CACHE["cent2"] = np.fromfile(
-            os.path.join(p, "periphery", "ivf_cent2.bin"), np.float32)
+            _loc(p, "periphery/ivf_cent2.bin"), np.float32)
     return _IVF_CACHE["cent2"]
 
 
@@ -1073,15 +1097,16 @@ _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
 
 def stream_create(native_lib_dir, files_dir, uid, profile=False,
                   f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
-                  f0_win=64, future=30):
-    """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。"""
+                  f0_win=64, future=30, role_dir=None):
+    """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。
+    role_dir: 角色包解压根目录;None = 全从 files_dir 读(旧行为)。"""
     global _STREAM, _DBG
     _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
     from rvc_stream import RVCStream
     _STREAM = RVCStream(native_lib_dir, files_dir, uid, profile=profile,
                         f0_up_key=f0_up_key, rms_mix_rate=rms_mix_rate,
                         index_rate=index_rate, protect=protect,
-                        f0_win=f0_win, future=future)
+                        f0_win=f0_win, future=future, role_dir=role_dir)
     return True
 
 

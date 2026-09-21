@@ -92,14 +92,15 @@ object HalRvcBridge {
     @Volatile private var rvcRms = 0.75f
     @Volatile private var rvcIdx = 0.75f
     @Volatile private var rvcProt = 0.33f
+    @Volatile private var rvcRoleDir: String? = null
 
     fun isActive(): Boolean = running
 
     @Synchronized
-    fun start(context: Context, key: Int, rms: Float, idx: Float, prot: Float) {
+    fun start(context: Context, key: Int, rms: Float, idx: Float, prot: Float, roleDir: String? = null) {
         if (running) return
         running = true
-        rvcKey = key; rvcRms = rms; rvcIdx = idx; rvcProt = prot
+        rvcKey = key; rvcRms = rms; rvcIdx = idx; rvcProt = prot; rvcRoleDir = roleDir
         inBlocks.clear()
         accLen = 0
 
@@ -347,7 +348,8 @@ object HalRvcBridge {
             android.os.Process.myUid(),
             false,          // profile
             rvcKey, rvcRms, rvcIdx, rvcProt,
-            64, 12          // f0_win, future
+            64, 12,         // f0_win, future
+            rvcRoleDir      // role_dir(角色包根目录;null=files_dir 全量)
         )
         // 预热 6 块静音,让 rmvpe/hubert/z/dec 首次 init + 索引加载完成
         val warm = ByteArray(BLOCK_48K * 6 * 4)

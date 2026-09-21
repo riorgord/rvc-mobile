@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
+import android.net.Uri
 import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
@@ -52,6 +53,12 @@ class MainActivity : Activity() {
     @Volatile private var streamRunning = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("rvc_prefs", MODE_PRIVATE) }
+    private var roles = listOf<RoleInfo>()
+    private lateinit var roleSpinner: Spinner
+    private lateinit var setupProgress: ProgressBar
+    private lateinit var setupStatus: TextView
+    private val REQ_ROLE = 1001
+    private val REQ_SHARED = 1002
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -165,7 +172,9 @@ class MainActivity : Activity() {
                 val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
                 val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
                 val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
-                HalRvcBridge.start(this@MainActivity, key, rms, idx, prot)
+                val roleDir = RoleManager.currentRoleDir(filesDir, prefs)
+                if (roleDir == null) log("当前未选角色,将用 files_dir 旧路径")
+                HalRvcBridge.start(this@MainActivity, key, rms, idx, prot, roleDir)
                 runCatching { startForegroundService(Intent(this@MainActivity, MicrophoneService::class.java)) }
                 halBtn.text = "HAL桥接(关)"
                 log("HAL 桥接启动: 已连 socket,去微信发语音测试")
@@ -249,6 +258,51 @@ class MainActivity : Activity() {
             addView(halBtn, w)
         }
 
+        // ---- 角色/共享件管理 ----
+        roleSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter<String>(this@MainActivity,
+                android.R.layout.simple_spinner_item, emptyList()).apply {
+                setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+            }
+        }
+        val useRoleBtn = Button(this).apply {
+            text = "用选中角色"
+            setOnClickListener { useSelectedRole() }
+        }
+        val importRoleBtn = Button(this).apply {
+            text = "导入角色包"
+            setOnClickListener { pickFile(REQ_ROLE) }
+        }
+        val importSharedBtn = Button(this).apply {
+            text = "SAF导入shared"
+            setOnClickListener { pickFile(REQ_SHARED) }
+        }
+        val downloadSharedBtn = Button(this).apply {
+            text = "下载共享件"
+            setOnClickListener { downloadShared() }
+        }
+        setupProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            visibility = View.GONE
+        }
+        setupStatus = TextView(this).apply {
+            textSize = 12f
+            setPadding(0, 4, 0, 0)
+        }
+        val rowRole = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(roleSpinner, w)
+            addView(useRoleBtn, w)
+        }
+        val rowRoleBtns = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+            addView(importRoleBtn, w)
+            addView(importSharedBtn, w)
+            addView(downloadSharedBtn, w)
+        }
+
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -261,6 +315,15 @@ class MainActivity : Activity() {
             addView(rowBright)
             addView(rowLatency)
             addView(rowHal)
+            addView(TextView(this@MainActivity).apply {
+                text = "── 角色/共享件 ──"
+                textSize = 12f
+                setPadding(0, 16, 0, 4)
+            })
+            addView(rowRole)
+            addView(rowRoleBtns)
+            addView(setupProgress)
+            addView(setupStatus)
             addView(f0Progress)
             addView(scroll, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -282,8 +345,14 @@ class MainActivity : Activity() {
             File(filesDir, "periphery").listFiles()?.size ?: 0))
         // 默认管线预载:hubert + fcpe + gen 常驻(rmvpe 切换时现场加载+进度条)
         // (rmvpe 自动全链路验证改由"全链路"按钮手动触发)
-        log("预载 fcpe 管线…")
-        preloadDefault()
+        refreshRoles()
+        refreshSharedStatus()
+        if (RoleManager.isSharedReady(filesDir)) {
+            log("预载 fcpe 管线…")
+            preloadDefault()
+        } else {
+            log("共享件缺失:请先 下载共享件 或 SAF 导入 shared.zip")
+        }
     }
 
     /** 启动预载默认 fcpe 管线(hubert+fcpe+gen 常驻)。 */
@@ -554,7 +623,8 @@ class MainActivity : Activity() {
                 ensurePy()
                 Python.getInstance().getModule("rvc_api").callAttr(
                     "stream_create", nativeLibDir(), filesDir.absolutePath,
-                    android.os.Process.myUid(), profile, key, rms, 0.0f, prot, 64, 12)
+                    android.os.Process.myUid(), profile, key, rms, 0.0f, prot, 64, 12,
+                    RoleManager.currentRoleDir(filesDir, prefs))
                 val ms = Python.getInstance().getModule("rvc_api")
                     .callAttr("stream_measure_latency", 4).toDouble()
                 val s = "%.0f".format(ms)
@@ -566,6 +636,135 @@ class MainActivity : Activity() {
             }
         }.start()
     }
+
+    // ---------------- 角色/共享件管理 ----------------
+
+    private fun refreshRoles() {
+        roles = RoleManager.scanRoles(filesDir)
+        val names = roles.map { "${it.name} (${it.modelId})" }
+        roleSpinner.adapter = ArrayAdapter(this,
+            android.R.layout.simple_spinner_item, names).apply {
+            setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        }
+        val cur = RoleManager.currentRoleId(prefs)
+        val idx = roles.indexOfFirst { it.modelId == cur }
+        if (idx >= 0) roleSpinner.setSelection(idx)
+        log("角色列表: ${roles.size} 个")
+    }
+
+    private fun useSelectedRole() {
+        val idx = roleSpinner.selectedItemPosition
+        if (idx < 0 || idx >= roles.size) {
+            log("请先导入角色包")
+            return
+        }
+        val r = roles[idx]
+        RoleManager.setCurrentRole(prefs, r.modelId)
+        log("当前角色 → ${r.name} (${r.modelId})")
+    }
+
+    private fun refreshSharedStatus() {
+        if (RoleManager.isSharedReady(filesDir)) {
+            setupStatus.text = "共享件就绪 ✔"
+        } else {
+            setupStatus.text = "共享件缺失 → 请下载或 SAF 导入 shared.zip"
+        }
+    }
+
+    private fun pickFile(req: Int) {
+        val i = Intent(Intent.ACTION_OPEN_DOCUMENT)
+        i.addCategory(Intent.CATEGORY_OPENABLE)
+        i.type = "application/zip"
+        i.putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/zip", "application/octet-stream"))
+        startActivityForResult(i, req)
+    }
+
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (resultCode != Activity.RESULT_OK || data?.data == null) return
+        val uri: Uri = data.data!!
+        when (requestCode) {
+            REQ_ROLE -> Thread {
+                try {
+                    val id = RoleManager.importUri(this, uri, filesDir)
+                    runOnUiThread {
+                        refreshRoles()
+                        if (roles.isNotEmpty()) {
+                            val i = roles.indexOfFirst { it.modelId == id }.coerceAtLeast(0)
+                            roleSpinner.setSelection(i)
+                        }
+                        RoleManager.setCurrentRole(prefs, id)
+                        log("角色导入成功: $id")
+                    }
+                } catch (e: Throwable) {
+                    log("角色导入失败: $e")
+                }
+            }.start()
+            REQ_SHARED -> Thread {
+                try {
+                    RoleManager.importUri(this, uri, filesDir)
+                    runOnUiThread {
+                        refreshSharedStatus()
+                        log("共享件导入成功")
+                    }
+                } catch (e: Throwable) {
+                    log("共享件导入失败: $e")
+                }
+            }.start()
+        }
+    }
+
+    private fun downloadShared() {
+        setupProgress.visibility = View.VISIBLE
+        setupProgress.progress = 0
+        setupStatus.text = "探测下载源…"
+        Thread {
+            val src = SharedDownloader.probeAndPick()
+            if (src == null) {
+                runOnUiThread {
+                    setupStatus.text = "下载源不可达/未配置 → 请用 SAF 导入 shared.zip"
+                    setupProgress.visibility = View.GONE
+                }
+                log("下载源不可达或未配置,改用 SAF 导入")
+                return@Thread
+            }
+            val dest = File(filesDir, "shared.zip")
+            runOnUiThread { setupStatus.text = "从 ${src.name} 下载…" }
+            val ok = SharedDownloader.download(src, dest, { done, total ->
+                runOnUiThread {
+                    if (total != null && total > 0) {
+                        setupProgress.progress = ((done * 100) / total).toInt()
+                        setupStatus.text = "下载 ${done / 1048576}MB / ${total / 1048576}MB"
+                    } else {
+                        setupStatus.text = "下载 ${done / 1048576}MB…"
+                    }
+                }
+            })
+            if (!ok) {
+                runOnUiThread {
+                    setupStatus.text = "下载失败 → 请用 SAF 导入"
+                    setupProgress.visibility = View.GONE
+                }
+                return@Thread
+            }
+            try {
+                RoleManager.importZipFile(dest, filesDir)
+                dest.delete()
+                runOnUiThread {
+                    refreshSharedStatus()
+                    setupStatus.text = "共享件下载+解压完成 ✔"
+                    setupProgress.visibility = View.GONE
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    setupStatus.text = "解压/校验失败: $e"
+                    setupProgress.visibility = View.GONE
+                }
+                log("shared 解压失败: $e")
+            }
+        }.start()
+    }
+
 
 
     /** 递归复制 assets 子目录到 filesDir,已存在文件跳过、缺失补拷(参考 GSV)。 */

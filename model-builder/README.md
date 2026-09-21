@@ -298,10 +298,10 @@ zip 内部结构（示例）：
 
 转换完成后得到：
 
-- **角色包**：一个 `角色名.zip`（`ZIP_STORED`），内含 `manifest.json` + 各个 `.bin` 文件 + 索引文件。
-- 把 zip 拷到手机 App 的角色目录（如 `/sdcard/RVC/models/`），App 扫描 zip、读 `manifest.json` 列出角色。
-- 选中角色后，App 按需把 zip 里的条目**流式落盘到私有目录**再加载；已落盘则复用，不用手动解压。
-- 共享件（hubert / f0 / z_producer / periphery）由 App 内置或另行提供，本脚本不负责共享件。
+- **角色包**：一个 `角色名.zip`（`ZIP_STORED`），内含 `manifest.json` + 角色模型 + 索引文件。
+- 手机 App 里点“导入角色包”(SAF 文件选择器) 选这个 zip，App 读 `manifest.json`、逐文件 SHA256 校验后整包解压到私有目录 `filesDir/roles/<model_id>/`。
+- **共享件**：`build_shared.py` 产出 `shared.zip`（hubert / f0 / df3r / mel / emb / sine / cent_table / proj），App 首启自动探测抱脸/魔塔下载，失败可 SAF 手动导入；不随角色包分发。
+- App 选中角色后，实时链路从 `roles/<model_id>/` 读角色件、从共享目录读共享件。
 
 > 本脚本只负责“转换产出”，不涉及任何发布/上传流程。
 
@@ -326,6 +326,7 @@ convert.py        # 唯一入口，config 驱动，非交互
 config.yaml       # 全注释变量
 export_onnx.py    # .pth → ONNX
 build_index.py    # .index → App 索引
+build_shared.py   # App 共享件 → shared.zip（首启下载/SAF 导入用）
 pack_role.py      # 组装 ZIP_STORED 角色包 + manifest + SHA256
 manifests/        # manifest 模板
 htp_cfg/          # HTP 配置（backend_extensions / htp_config）
