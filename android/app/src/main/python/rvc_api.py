@@ -1051,12 +1051,12 @@ def process_stream_v2_ref(native_lib_dir, files_dir, uid, profile=False,
 
 
 def preload_default(native_lib_dir, files_dir, uid, profile=False):
-    """启动预载默认 fcpe 管线:hubert + fcpe + gen 常驻内存(实时零加载开销)。
-    rmvpe 不预载,切换时由 init_f0 现场加载。"""
+    """启动预载默认管线:hubert + fcpe 常驻内存(实时零加载开销)。
+    gen_fp32 是旧单模型路径,实时链路已改 z_producer+dec_short,不再预载;
+    rmvpe 不预载,由 RVCStream 现场加载(rmvpe_fp32_64)。"""
     gsv = init(native_lib_dir, files_dir, uid, profile)
     for bin_name, gname in [("hubert_mix_def_t4800.bin", "hubert_mix_def_t4800"),
-                            ("fcpe_256.bin", "fcpe_256"),
-                            ("gen_fp32.bin", "gen_fp32")]:
+                            ("fcpe_256.bin", "fcpe_256")]:
         gsv.init(os.path.join(files_dir, "models", bin_name), gname)
     # BLAS 探针:判断 numpy 是否吃到 OpenBLAS(GFLOP/s >> 3 则有)
     try:

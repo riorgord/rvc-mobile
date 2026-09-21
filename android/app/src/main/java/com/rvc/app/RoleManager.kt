@@ -25,6 +25,9 @@ object RoleManager {
     private const val TAG = "RoleManager"
     const val PREF_ROLE = "current_role_id"
 
+    /** 本机期望的 HTP 架构(sm8475 = V69)。QNN 编译产物绑死架构,对不上不能用。 */
+    const val EXPECTED_ARCH = "sm8475"
+
     /** 共享件最小集合(shared.zip manifest 里应包含这些)。 */
     val REQUIRED_SHARED = arrayOf(
         "models/hubert_mix_def_t4800.bin",
@@ -91,6 +94,7 @@ object RoleManager {
     /** 导入本地 zip 文件(下载/复制后的路径)。 */
     fun importZipFile(zip: File, filesDir: File): String {
         val manifest = readManifest(zip)
+        checkArch(manifest)
         val type = manifest.optString("type", "role")
         return if (type == "shared") {
             extractShared(zip, filesDir, manifest)
@@ -116,6 +120,13 @@ object RoleManager {
             }
         }
         throw RuntimeException("zip 里没有 manifest.json")
+    }
+
+    private fun checkArch(m: JSONObject) {
+        val arch = m.optString("arch")
+        if (arch.isNotEmpty() && arch != EXPECTED_ARCH) {
+            throw RuntimeException("架构不匹配:包是 $arch,本机需要 $EXPECTED_ARCH")
+        }
     }
 
     private fun extractShared(zip: File, filesDir: File, manifest: JSONObject) {

@@ -12,6 +12,9 @@
     把 `enabled` 置 `true`（App 首启自动探测选低延迟源下载）。
   - 抱脸直链格式：`https://huggingface.co/<组织>/<repo>/resolve/main/shared.zip`
   - 魔塔直链格式：`https://www.modelscope.cn/models/<组织>/<repo>/resolve/master/shared.zip`
+- **架构绑定**:shared.zip 和 role.zip 里的 QNN .bin 都烙死 `soc_type=SM8475` / `V69`(没有 .maf 文件,标识在 bin 内部 + manifest 的 `arch` 字段)。
+  - 上传/命名建议带架构,如 `shared-sm8475.zip`、`naiqiawang-sm8475.zip`,避免跨机型混用。
+  - App 导入已按 `manifest.arch` 校验,不匹配会拒绝;多机型支持后续按 arch 分别编译/下载。
 - 角色包计划上传：魔塔 / Hugging Face（App 在线角色库后续做）。
 - 维护一张登记表：模型名、作者/训练者、许可、署名要求、适用 SOC、下载地址。
 - App 侧策略：先查登记表自动下载；检测不到就手动选 SOC 下载，或选本地角色包（SAF 导入）。
