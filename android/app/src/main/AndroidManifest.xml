@@ -19,7 +19,7 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
-        android:label="RVC App"
+        android:label="RVC Mobile"
         android:icon="@mipmap/ic_launcher"
         android:extractNativeLibs="true"
         android:requestLegacyExternalStorage="true"
