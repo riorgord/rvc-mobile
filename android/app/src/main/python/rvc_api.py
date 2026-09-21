@@ -1099,14 +1099,27 @@ def stream_create(native_lib_dir, files_dir, uid, profile=False,
                   f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
                   f0_win=64, future=30, role_dir=None):
     """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。
-    role_dir: 角色包解压根目录;None = 全从 files_dir 读(旧行为)。"""
+    role_dir: 角色包解压根目录;None = 全从 files_dir 读(旧行为)。
+    角色切换:同名图槽(z_producer/dec_short_T61)先 remove,强制加载新 bin。"""
     global _STREAM, _DBG
     _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
+    # 角色变了:先释放旧角色占用且同名缓存的图,否则 gsv_init 同名不重载
+    old_role = _STATE.get("loaded_role_dir")
+    if old_role is not None and old_role != role_dir:
+        gsv = _STATE.get("gsv")
+        if gsv is not None:
+            for name in ("z_producer", "dec_short_T61"):
+                try:
+                    gsv.remove(name)
+                except Exception:
+                    pass
+        _STATE["loaded_role_dir"] = None
     from rvc_stream import RVCStream
     _STREAM = RVCStream(native_lib_dir, files_dir, uid, profile=profile,
                         f0_up_key=f0_up_key, rms_mix_rate=rms_mix_rate,
                         index_rate=index_rate, protect=protect,
                         f0_win=f0_win, future=future, role_dir=role_dir)
+    _STATE["loaded_role_dir"] = role_dir
     return True
 
 
@@ -1172,6 +1185,7 @@ def stream_cleanup():
     """彻底释放 gsv graph(停止桥接时调用), 防止反复开关桥接超过 8 graph 上限。"""
     global _STREAM
     _STREAM = None
+    _STATE["loaded_role_dir"] = None
     gsv = _STATE.get("gsv")
     if gsv is not None:
         try:

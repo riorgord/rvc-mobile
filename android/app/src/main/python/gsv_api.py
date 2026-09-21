@@ -59,6 +59,8 @@ class Gsv:
         lib.gsv_execute.restype = ctypes.c_int
         lib.gsv_profile_dump.argtypes = [ctypes.c_char_p, ctypes.c_int, ctypes.c_int]
         lib.gsv_profile_dump.restype = ctypes.c_int
+        lib.gsv_remove.argtypes = [ctypes.c_char_p]
+        lib.gsv_remove.restype = ctypes.c_int
         lib.gsv_cleanup.restype = None
         self._lib = lib
         return lib
@@ -80,6 +82,11 @@ class Gsv:
         self.graph_name = graph_name
         perf.gsv_init_done(graph_name, time.perf_counter() - t0)
         return self.n_in, self.n_out
+
+    def remove(self, graph_name):
+        """移除单个 graph 槽(角色切换):同名下次 init 会重新加载新 bin。"""
+        assert self._lib is not None, "先 load()"
+        return self._lib.gsv_remove(graph_name.encode())
 
     def in_name(self, i):
         return (self._lib.gsv_in_name(i) or b"?").decode("utf-8", "replace")

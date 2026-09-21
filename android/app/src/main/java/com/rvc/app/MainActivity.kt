@@ -21,6 +21,7 @@ import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import java.io.File
@@ -57,6 +58,7 @@ class MainActivity : Activity() {
     private lateinit var roleSpinner: Spinner
     private lateinit var setupProgress: ProgressBar
     private lateinit var setupStatus: TextView
+    private lateinit var halBtn: Button
     private val REQ_ROLE = 1001
     private val REQ_SHARED = 1002
 
@@ -159,7 +161,7 @@ class MainActivity : Activity() {
             isIndeterminate = true
             visibility = View.GONE
         }
-        val halBtn = Button(this)
+        halBtn = Button(this)
         halBtn.text = "HAL桥接(开)"
         halBtn.setOnClickListener {
             if (HalRvcBridge.isActive()) {
@@ -168,6 +170,12 @@ class MainActivity : Activity() {
                 halBtn.text = "HAL桥接(开)"
                 log("HAL 桥接已停止(恢复纯透传)")
             } else {
+                if (!isHalModuleActive()) {
+                    log("需要 root + 安装 RVC HAL 模块(ro.hardware.audio.primary 非 rvc),无法启动变声")
+                    Toast.makeText(this@MainActivity,
+                        "需要 root 权限并安装 RVC HAL 模块", Toast.LENGTH_LONG).show()
+                    return@setOnClickListener
+                }
                 val key = keyInput.text.toString().toIntOrNull() ?: 0
                 val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
                 val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
@@ -660,7 +668,14 @@ class MainActivity : Activity() {
         }
         val r = roles[idx]
         RoleManager.setCurrentRole(prefs, r.modelId)
-        log("当前角色 → ${r.name} (${r.modelId})")
+        if (HalRvcBridge.isActive()) {
+            HalRvcBridge.stop()
+            if (!streamRunning) runCatching { stopService(Intent(this@MainActivity, MicrophoneService::class.java)) }
+            halBtn.text = "HAL桥接(开)"
+            log("角色已切换 → ${r.name} (${r.modelId}),HAL 已停止,请重新点「HAL桥接」启动")
+        } else {
+            log("当前角色 → ${r.name} (${r.modelId}),启动 HAL 后生效")
+        }
     }
 
     private fun refreshSharedStatus() {
@@ -670,6 +685,20 @@ class MainActivity : Activity() {
             setupStatus.text = "共享件缺失 → 请下载或 SAF 导入 shared.zip"
         }
     }
+
+    /* 轻量检测 HAL 模块是否生效:ro.hardware.audio.primary 应为 rvc。
+     * 无需 root 权限,读系统属性即可;非 root/未装模块时会拦截 HAL 启动。 */
+    private fun isHalModuleActive(): Boolean {
+        return try {
+            val p = ProcessBuilder("getprop", "ro.hardware.audio.primary").start()
+            val s = p.inputStream.bufferedReader().readText().trim().lowercase()
+            p.waitFor()
+            s.contains("rvc")
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
 
     private fun pickFile(req: Int) {
         val i = Intent(Intent.ACTION_OPEN_DOCUMENT)

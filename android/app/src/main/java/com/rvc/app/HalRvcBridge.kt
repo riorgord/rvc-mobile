@@ -50,6 +50,7 @@ object HalRvcBridge {
     private const val FILL_CHUNK_SECONDS = 0.2
     private const val FILL_CHUNK_MS = 200L
     private const val MAGIC = 0x52564331
+    private const val RING_LOW_CMD = -2      // 0xFFFFFFFE:SO 通知环快空,请预填静音
     private const val HEADER_SIZE = 20
     private const val BLOCK_48K = 17760      // 370ms @48k
     private const val RVC_OUT_RATE = 40000
@@ -159,6 +160,14 @@ object HalRvcBridge {
                     val ch = bb.int
                     val fmt = bb.int
                     val n = bb.int
+                    if (n == RING_LOW_CMD) {
+                        // SO 环快空:重启静音预填充(不清 inBlocks,只把 realOutputReady 拉回 false)
+                        streamSr = sr; streamCh = ch; streamFmt = fmt
+                        realOutputReady = false
+                        startSilenceFiller()
+                        Log.i(TAG, "ring low -> refill silence")
+                        continue
+                    }
                     if (n < 0 || n > (1 shl 20)) break
                     if (n == 0) {
                         // HAL 新一段录音开始的重置标记:清掉上一段积压,启动动态静音填充
