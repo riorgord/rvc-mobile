@@ -1,0 +1,13 @@
+{
+  "model_id": "my_char_v1",
+  "name": "角色显示名",
+  "author": "模型训练者/作者",
+  "license": "填写许可类型",
+  "attribution": "作者要求的署名/注明方式",
+  "arch": "sm8475",
+  "sdk_version": "2.47",
+  "files": [
+    {"name": "dec_short_t61.sm8475.bin.bin", "sha256": ""},
+    {"name": "idx256.bin", "sha256": ""}
+  ]
+}

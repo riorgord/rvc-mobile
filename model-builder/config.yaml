@@ -1,0 +1,53 @@
+# ========== RVC 模型转换配置（v1 占位，所有可改项都在这） ==========
+
+
+
+# 输出
+output_dir: "./out"     # 角色包输出目录（散文件，调试用）
+pack_as_zip: true       # true = 额外打一个 ZIP_STORED 角色包 zip（对外分发用）
+
+# 目标架构（默认 sm8475 = K50U / 8 Gen 1）
+arch: "sm8475"
+
+# QNN SDK（在 WSL 内的路径）
+qnn_sdk_root: "/home/riorg/qnn_sdk"   # 例如 /home/riorg/qnn_sdk；空则尝试用 QNN_SDK_ROOT
+sdk_version: "2.47"
+wsl_distro: "Ubuntu-2204-QNN"        # Windows 下跑 QNN 编译用的 WSL 发行版（可留空用默认）
+
+# 导出 ONNX 参数（按实际模型改）
+onnx:
+  float_bitwidth: 32
+  inputs:               # 输入名 -> 形状
+    phone: [1, 224, 768]
+    rnd: [1, 192, 224]
+
+# HTP 配置（backend_extensions / htp_config）
+htp_cfg_dir: "./htp_cfg"
+
+# 要编译的组件（角色件）。每个组件 = 一个 ONNX -> DLC -> context binary。
+# inputs 里的 key/value 会拼成 snpe-onnx-to-dlc 的 -d 参数（按实际 ONNX 改）。
+components:
+  - name: "z_producer"
+    onnx: ""             # 空 = 用 output_dir/onnx/z_producer.onnx
+    float_bitwidth: 32
+    inputs:
+      phone: [1, 224, 768]
+      pitch_emb: [1, 224, 192]
+      lengths: [1]
+      rnd: [1, 192, 224]
+      g: [1, 256, 1]
+  - name: "dec_short_T61"
+    onnx: ""             # 空 = 用 output_dir/onnx/dec_short_T61.onnx
+    float_bitwidth: 32
+    inputs:
+      z: [1, 192, 61]
+      sine: [1, 1, 24400]
+      g: [1, 256, 1]
+
+# manifest 信息（角色包署名）
+manifest:
+  model_id: ""
+  name: ""
+  author: ""
+  license: ""
+  attribution: ""

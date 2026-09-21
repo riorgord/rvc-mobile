@@ -1,0 +1,8 @@
+# 构建产物（大文件，不入库；test_out 里的 zip 等随时可重新生成）
+test_out/
+out/
+*.zip
+
+# Python
+__pycache__/
+*.pyc
