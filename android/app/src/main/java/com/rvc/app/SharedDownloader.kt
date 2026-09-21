@@ -12,9 +12,8 @@ import java.net.URL
  * 策略:并行探测抱脸/魔塔两个源的连通性与延迟,选可达且延迟低的下载;
  * 都不可达/未配置时返回 null,由 UI 引导 SAF 手动导入。
  *
- * TODO: 上传 shared.zip 后,把真实直链填进 SHARED_URLS 并把 enabled 置 true。
- *   抱脸: https://huggingface.co/<你的组织>/<repo>/resolve/main/shared.zip
- *   魔塔: https://www.modelscope.cn/models/<你的组织>/<repo>/resolve/master/shared.zip
+ * 直链(2026-09-21 已验证):shared-v69-42.zip 对应 SM8475 / V69 / soc42。
+ * 以后每类设备一份,按设备名区分文件。
  */
 object SharedDownloader {
     private const val TAG = "SharedDownloader"
@@ -23,9 +22,9 @@ object SharedDownloader {
 
     private val SHARED_URLS = listOf(
         Triple("huggingface",
-            "https://huggingface.co/<org>/rvc-shared/resolve/main/shared.zip", false),
+            "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-42.zip", true),
         Triple("modelscope",
-            "https://www.modelscope.cn/models/<org>/rvc-shared/resolve/master/shared.zip", false)
+            "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-42.zip", true)
     )
 
     data class Source(val name: String, val url: String)

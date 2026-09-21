@@ -5,8 +5,8 @@
 由 App 内置改为首启下载后,APK 不再打包角色件也不打包共享件。
 
 用法:
-  python build_shared.py --assets <rvc_app/android/app/src/main/assets> \
-      --out <输出目录> [--zip out/shared.zip]
+  python build_shared.py --assets <rvc_app/model-builder/shared_src> \
+      --out <输出目录> [--zip out/shared-v69-42.zip]
   python build_shared.py --verify shared.zip          # 校验一个已有 shared.zip
 
 manifest.json:

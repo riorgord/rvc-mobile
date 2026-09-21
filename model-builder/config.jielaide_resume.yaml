@@ -5,7 +5,7 @@ pth_path: ""                 # 空 = 跳过 export（已有 onnx/g.bin/rnd.bin�
 index_path: "E:\\BaiduNetdiskDownload\\RVC-beta\\RVC20240604Nvidia\\RVC20240604Nvidia\\logs\\jielaide.index"
 ref_wav: ""
 rvc_pkg: ""
-proj_path: "D:\\AI\\claw_repair\\research\\rvc\\rvc_app\\android\\app\\src\\main\\assets\\periphery\\proj.bin"
+proj_path: "D:\\AI\\claw_repair\\research\\rvc\\rvc_app\\model-builder\\shared_src\\periphery\\proj.bin"
 verify_onnx: false
 device: ""
 

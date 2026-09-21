@@ -5,7 +5,7 @@ pth_path: "E:\\BaiduNetdiskDownload\\RVC-beta\\RVC20240604Nvidia\\RVC20240604Nvi
 index_path: "E:\\BaiduNetdiskDownload\\RVC-beta\\RVC20240604Nvidia\\RVC20240604Nvidia\\logs\\naiqiawang.index"
 ref_wav: "D:\\AI\\音频收集\\参考音频\\gya_02130.wav"
 rvc_pkg: "E:\\BaiduNetdiskDownload\\RVC-beta\\RVC20240604Nvidia\\RVC20240604Nvidia"
-proj_path: "D:\\AI\\claw_repair\\research\\rvc\\rvc_app\\android\\app\\src\\main\\assets\\periphery\\proj.bin"
+proj_path: "D:\\AI\\claw_repair\\research\\rvc\\rvc_app\\model-builder\\shared_src\\periphery\\proj.bin"
 verify_onnx: true
 device: "cuda"
 

@@ -177,7 +177,7 @@ def step_index(cfg):
         return
     proj = cfg.get("proj_path", "") or os.path.join(_HERE, "shared", "proj.bin")
     if not os.path.isfile(proj):
-        log("[error] 缺 proj.bin，请在 config 里配 proj_path（共享投影矩阵，App assets/periphery/proj.bin）")
+        log("[error] 缺 proj.bin，请在 config 里配 proj_path（共享投影矩阵，model-builder/shared_src/periphery/proj.bin）")
         return
     out = os.path.join(cfg["output_dir"], "role_pack")
     os.makedirs(out, exist_ok=True)

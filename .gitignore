@@ -22,3 +22,6 @@ android/app/src/main/assets/models/
 # OS / editor
 .DS_Store
 Thumbs.db
+
+# Shared source backup (huge, not versioned)
+model-builder/shared_src/
