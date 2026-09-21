@@ -33,7 +33,14 @@ class PcmStreamProvider : ContentProvider() {
         android.util.Log.i(
             "GlassMic-Runtime",
             "PcmStream.open sr=$sampleRate ch=$channels caller=$callingPackage " +
-                "src=${PcmTestSource.sourceSampleRate}/${PcmTestSource.sourceChannels}"
+                "src=${when {
+                    RvcQueueSource.isActive() -> "RVC_QUEUE"
+                    RvcPcmSource.isActive() -> "RVC"
+                    else -> "FILE(PcmTest)"
+                }} " +
+                "queue=${if (RvcQueueSource.isActive()) RvcQueueSource.bufferedBlocks() else 0} " +
+                "rvc=${RvcPcmSource.sourceSampleRate}/${RvcPcmSource.sourceChannels} " +
+                "test=${PcmTestSource.sourceSampleRate}/${PcmTestSource.sourceChannels}"
         )
 
         // 写线程:按目标 sr/ch 重采样 + 20ms 实时节流,模拟真麦克风。
@@ -41,15 +48,34 @@ class PcmStreamProvider : ContentProvider() {
             val targetFrameBytes = channels.coerceAtLeast(1) * 2
             val chunkFrames = (sampleRate.coerceAtLeast(1) * 20 / 1000).coerceAtLeast(1)
             val buf = ByteArray(chunkFrames * targetFrameBytes)
+            var writes = 0
+            var shortWrites = 0
             try {
                 val out = ParcelFileDescriptor.AutoCloseOutputStream(writeSide)
                 while (true) {
-                    val n = PcmTestSource.fillResampled(buf, 0, buf.size, sampleRate, channels)
-                    if (n > 0) {
-                        out.write(buf, 0, n)
-                    } else {
-                        ComfortNoise.fillBytes(buf, 0, buf.size)
-                        out.write(buf)
+                    val n = when {
+                        RvcQueueSource.isActive() ->
+                            RvcQueueSource.fillResampled(buf, 0, buf.size, sampleRate, channels)
+                        RvcPcmSource.isActive() ->
+                            RvcPcmSource.fillResampled(buf, 0, buf.size, sampleRate, channels)
+                        else ->
+                            PcmTestSource.fillResampled(buf, 0, buf.size, sampleRate, channels)
+                    }
+                    // 无论 RVC 给多少,永远写满一个完整 20ms 块(不足部分用舒适噪声补),
+                    // 否则微信/QQ 编码器会因节奏断裂报"语音错误"。
+                    if (n < buf.size) {
+                        shortWrites++
+                        ComfortNoise.fillBytes(buf, n.coerceAtLeast(0), buf.size - n.coerceAtLeast(0))
+                    }
+                    out.write(buf)
+                    writes++
+                    if (writes % 100 == 0) {
+                        android.util.Log.i(
+                            "RvcWriter",
+                            "n=$n/${buf.size} short=$shortWrites writes=$writes " +
+                                "rvcActive=${RvcPcmSource.isActive() || RvcQueueSource.isActive()} " +
+                                "queueMs=${if (RvcQueueSource.isActive()) RvcQueueSource.bufferedMs() else 0}"
+                        )
                     }
                     // 真麦节奏:20ms 一帧
                     runCatching { Thread.sleep(20) }

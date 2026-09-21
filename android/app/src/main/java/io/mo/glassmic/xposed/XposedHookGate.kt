@@ -44,6 +44,8 @@ object XposedHookGate {
         "com.android.externalstorage",
         "com.android.documentsui",
         "com.android.printspooler",
+        "com.android.networkstack",
+        "com.android.networkstack.inprocess",
 
         // Launcher
         "com.android.launcher3",

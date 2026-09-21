@@ -1131,3 +1131,26 @@ def stream_reset():
     global _STREAM
     _STREAM = None
     return True
+
+
+def stream_clear():
+    """轻量清空当前 RVCStream 的内部流式状态(不释放/重载模型)。
+    新一段录音开始前调用, 防止上一段音频尾残留在 acc/buf/f0/降噪器里。"""
+    global _STREAM
+    if _STREAM is None:
+        return True
+    _STREAM.clear_state()
+    return True
+
+
+def stream_cleanup():
+    """彻底释放 gsv graph(停止桥接时调用), 防止反复开关桥接超过 8 graph 上限。"""
+    global _STREAM
+    _STREAM = None
+    gsv = _STATE.get("gsv")
+    if gsv is not None:
+        try:
+            gsv.cleanup()
+        except Exception:
+            pass
+    return True

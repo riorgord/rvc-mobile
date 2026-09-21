@@ -130,6 +130,13 @@ class DF3Denoiser:
         self._fspec_state = np.linspace(0.001, 0.0001, NB_DF, dtype=np.float32)
         self._istft_mem = np.zeros(HOP, np.float32)
 
+    def clear_state(self):
+        """新录音开始前清空内部缓冲, 防止上一段音频尾残留进下一段。"""
+        self.acc = np.zeros(PREV48, np.float32)
+        self._erb_state = np.linspace(-60.0, -90.0, NB_ERB, dtype=np.float32)
+        self._fspec_state = np.linspace(0.001, 0.0001, NB_DF, dtype=np.float32)
+        self._istft_mem = np.zeros(HOP, np.float32)
+
     def process(self, x48k):
         """输入 48k float 块 → 降噪 16k 块。累积够 9120(160ms+前480+20ms lookahead) 才处理。"""
         x48k = np.asarray(x48k, np.float32)

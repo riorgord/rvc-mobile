@@ -125,6 +125,7 @@ object AudioRecordHook {
 
     private fun handleByteArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
         val src = XBridge.resolveSource(appCtx, pkg)
+        MicFeeder.onRead(appCtx, pkg, src)
         if (src == SourceType.REAL_MIC) return HookDecision.Proceed
 
         val buf = chain.getArg(0) as ByteArray
@@ -158,6 +159,7 @@ object AudioRecordHook {
 
     private fun handleShortArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
         val src = XBridge.resolveSource(appCtx, pkg)
+        MicFeeder.onRead(appCtx, pkg, src)
         if (src == SourceType.REAL_MIC) return HookDecision.Proceed
 
         val buf = chain.getArg(0) as ShortArray
@@ -189,6 +191,7 @@ object AudioRecordHook {
 
     private fun handleFloatArray(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
         val src = XBridge.resolveSource(appCtx, pkg)
+        MicFeeder.onRead(appCtx, pkg, src)
         if (src == SourceType.REAL_MIC) return HookDecision.Proceed
 
         val buf = chain.getArg(0) as FloatArray
@@ -220,6 +223,7 @@ object AudioRecordHook {
 
     private fun handleByteBuffer(appCtx: Context, pkg: String, chain: XposedInterface.Chain): HookDecision {
         val src = XBridge.resolveSource(appCtx, pkg)
+        MicFeeder.onRead(appCtx, pkg, src)
         if (src == SourceType.REAL_MIC) return HookDecision.Proceed
 
         val buf = chain.getArg(0) as ByteBuffer

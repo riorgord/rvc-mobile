@@ -47,6 +47,12 @@
             </intent-filter>
         </activity>
 
+        <!-- 麦克风前台服务:防 MIUI 后台静音 -->
+        <service
+            android:name=".MicrophoneService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <!-- P0 调试控制:adb 开关全局接管 -->
         <receiver
             android:name=".RackCommandReceiver"

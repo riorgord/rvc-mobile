@@ -199,6 +199,38 @@ class RVCStream:
                         "out": np.zeros(0, np.float32)}
         self._dump_last = 0.0
 
+    def clear_state(self):
+        """新录音开始前清空流式内部状态(不重载模型/外围数据), 防止上一段音频尾残留进下一段。"""
+        self.acc = np.zeros(0, np.float32)
+        self.s0 = 0
+        self.f0 = np.zeros(0, np.float32)
+        self.f0_i = np.zeros(0, np.float32)
+        self.F50m = np.zeros((0, 768), np.float32)
+        self.F50raw = np.zeros((0, 768), np.float32)
+        self.F50_mixed = np.zeros(0, np.bool_)
+        self.blk_done = 0
+        self.buf = np.zeros(0, np.float32)
+        self.wsum = np.zeros(0, np.float32)
+        self.out_base = -self.R * 400
+        self._out_hist = np.zeros(0, np.float32)
+        self._out_done = 0
+        self._sine_done_frames = 0
+        self._sine_rad_acc = 0.0
+        self._sine_cache = []
+        self._rand_ini = None
+        self._sine_rng = np.random.RandomState(0)
+        self.proc_times = []
+        self._in_total = 0
+        self._out_total = 0
+        self._last_log = 0.0
+        self._stage_ms = []
+        self._dump_b = {"pre": np.zeros(0, np.float32),
+                        "post": np.zeros(0, np.float32),
+                        "out": np.zeros(0, np.float32)}
+        self._dump_last = 0.0
+        if self._den is not None:
+            self._den.clear_state()
+
     # ---------------- 输入接口 ----------------
     def push(self, audio_48k):
         """追加 48k 音频(录音), 输入侧 DF3 降噪 → 下采样 16k → RVC 处理, 返回 40k 变声块(可能空)。

@@ -51,5 +51,17 @@ class RuntimeProvider : ContentProvider() {
     override fun update(uri: Uri, values: ContentValues?, selection: String?, selectionArgs: Array<out String>?): Int = 0
 
     // XBridge 会上报拦截统计/心跳,这里 P0 全部 no-op,保证调用不崩。
-    override fun call(method: String, arg: String?, extras: android.os.Bundle?): android.os.Bundle? = null
+    // pushMic:目标 App 回传真麦 PCM16,供 RVC 注入模式使用。
+    override fun call(method: String, arg: String?, extras: android.os.Bundle?): android.os.Bundle? {
+        if (method == "pushMic") {
+            val pcm = extras?.getByteArray("pcm")
+            if (pcm != null && pcm.size > 0) {
+                val sr = extras?.getInt("sr") ?: 16000
+                val ch = extras?.getInt("ch") ?: 1
+                MicFeedSource.push(pcm, sr, ch)
+            }
+            return android.os.Bundle()
+        }
+        return null
+    }
 }

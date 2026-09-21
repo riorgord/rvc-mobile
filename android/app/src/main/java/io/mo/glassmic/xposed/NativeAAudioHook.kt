@@ -163,6 +163,7 @@ object NativeAAudioHook {
     private fun startPoller(ctx: Context, callerPackage: String) {
         if (pollerStarted) return
         pollerStarted = true
+        var statLogCount = 0
         thread(name = "GlassMic-AAudioPoller", isDaemon = true, priority = Thread.MIN_PRIORITY) {
             val pollIntervalMs = 80L
             while (true) {
@@ -172,13 +173,13 @@ object NativeAAudioHook {
                     val decisionCode = when (src) {
                         SourceType.REAL_MIC -> 0
                         // FILE / TTS 都是"注入 PCM"（app 侧已把 TTS 归一为 FILE，这里仅为穷尽分支兜底）
-                        SourceType.FILE, SourceType.TTS -> 1
+                        SourceType.FILE, SourceType.TTS, SourceType.RVC -> 1
                         SourceType.SILENCE  -> 2
                     }
                     nativeSetDecision(decisionCode)
 
                     // 4.2 PCM fd
-                    if (src == SourceType.FILE || src == SourceType.TTS) {
+                    if (src == SourceType.FILE || src == SourceType.TTS || src == SourceType.RVC) {
                         ensurePcmFd(ctx)
                     } else if (hasPushedFd) {
                         // native 端已经有 fd 了，但当前不需要——通知 native 关掉
@@ -190,14 +191,22 @@ object NativeAAudioHook {
 
                     // 4.3 上报统计——native 已经聚合好了，走 batch 接口
                     val stats = nativeDrainStats()  // [reads, bytes, sr, ch, underruns, missing, requested, path]
-                    if (stats != null && stats.size >= 4) {
+                    if (stats != null && stats.size >= 8) {
                         val reads = stats[0].toInt()
                         val bytes = stats[1]
                         val sr = stats[2].toInt()
                         val ch = stats[3].toInt()
-                        // 全欠载时 bytes=0 也必须上报，否则诊断会一直显示旧应用的数据。
                         if (reads > 0) {
-                            val diagnostics = if (stats.size >= 8) Bundle().apply {
+                            statLogCount++
+                            if (statLogCount % 25 == 0) {
+                                android.util.Log.i(
+                                    "GlassMic-NativeStats",
+                                    "reads=$reads bytes=$bytes sr=$sr ch=$ch " +
+                                        "underruns=${stats[4]} missing=${stats[5]} " +
+                                        "requested=${stats[6]} path=${stats[7]}"
+                                )
+                            }
+                            val diagnostics = Bundle().apply {
                                 putLong("underrun_reads", stats[4])
                                 putLong("missing_frames", stats[5])
                                 putLong("requested_frames", stats[6])
@@ -208,13 +217,23 @@ object NativeAAudioHook {
                                     4 -> "OpenSL.callback"
                                     else -> "unknown"
                                 })
-                            } else null
+                            }
                             XBridge.reportInterceptBatch(
                                 ctx, callerPackage,
                                 deltaReads = reads,
                                 deltaBytes = bytes,
                                 sampleRate = sr, channels = ch,
                                 nativeDiagnostics = diagnostics
+                            )
+                        }
+                    } else if (stats != null && stats.size >= 4) {
+                        val reads = stats[0].toInt()
+                        if (reads > 0) {
+                            XBridge.reportInterceptBatch(
+                                ctx, callerPackage,
+                                deltaReads = reads,
+                                deltaBytes = stats[1],
+                                sampleRate = stats[2].toInt(), channels = stats[3].toInt()
                             )
                         }
                     }
