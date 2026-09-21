@@ -155,7 +155,8 @@ object RoleManager {
             while (e != null) {
                 if (!e.isDirectory) {
                     val name = e.name
-                    if (name != "manifest.json" && expected.containsKey(name)) {
+                    // manifest.json 也要写进角色目录,App 靠它识别/列出角色
+                    if (name == "manifest.json" || expected.containsKey(name)) {
                         val out = File(dest, name)
                         out.parentFile?.mkdirs()
                         zis.copyTo(out.outputStream())
