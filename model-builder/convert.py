@@ -140,7 +140,7 @@ def step_qnn(cfg):
     os.makedirs(ctx_dir, exist_ok=True)
     arch = cfg.get("arch", "sm8475")
     htp_cfg = cfg.get("htp_cfg_dir", os.path.join(_HERE, "htp_cfg"))
-    backend = os.path.join(sdk, "lib", "x86_64-linux-clang", "libQnnHtp.so")
+    backend = "%s/lib/x86_64-linux-clang/libQnnHtp.so" % sdk
 
     onnx_dir_w = to_wsl(onnx_dir)
     dlc_dir_w = to_wsl(dlc_dir)
@@ -149,18 +149,18 @@ def step_qnn(cfg):
 
     for comp in cfg.get("components", []):
         name = comp["name"]
-        onnx = comp.get("onnx", os.path.join(onnx_dir, name + ".onnx"))
+        onnx = comp.get("onnx") or os.path.join(onnx_dir, name + ".onnx")
         dlc = os.path.join(dlc_dir, name + ".dlc")
         binary = os.path.join(ctx_dir, name + "." + arch + ".bin")
         onnx_w = to_wsl(onnx)
         dlc_w = to_wsl(dlc)
         binary_w = to_wsl(binary)
-        inputs = " ".join("-d %s %s" % (k, " ".join(map(str, v)))
+        inputs = " ".join("-d %s %s" % (k, ",".join(map(str, v)))
                           for k, v in comp.get("inputs", {}).items())
         cmd1 = ("cd %s && snpe-onnx-to-dlc --input_network %s --float_bitwidth %s %s --output_path %s"
                 % (onnx_dir_w, onnx_w, comp.get("float_bitwidth", 32), inputs, dlc_w))
         run_in_wsl_or_bash("source %s/bin/envsetup.sh && %s" % (sdk, cmd1), distro)
-        cfg_file = comp.get("htp_config", os.path.join(htp_cfg, name + ".backend.json"))
+        cfg_file = comp.get("htp_config") or os.path.join(htp_cfg, name + ".backend.json")
         cfg_file_w = to_wsl(cfg_file)
         cmd2 = ("cd %s && qnn-context-binary-generator --dlc_path %s --backend %s "
                 "--config_file %s --binary_file %s --output_dir %s"
