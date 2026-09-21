@@ -22,12 +22,6 @@ import android.widget.Switch
 import android.widget.TextView
 import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
-import io.mo.glassmic.core.model.SourceType
-import io.mo.glassmic.provider.MicFeedSource
-import io.mo.glassmic.provider.PcmTestSource
-import io.mo.glassmic.provider.RackState
-import io.mo.glassmic.provider.RvcPcmSource
-import io.mo.glassmic.provider.RvcQueueSource
 import java.io.File
 import kotlin.concurrent.thread
 import java.nio.ByteBuffer
@@ -47,7 +41,6 @@ class MainActivity : Activity() {
     private lateinit var rmsInput: EditText
     private lateinit var idxInput: EditText
     private lateinit var protInput: EditText
-    private lateinit var budgetInput: EditText
     private lateinit var latencyView: TextView
     private lateinit var f0Spinner: Spinner
     private lateinit var f0Progress: ProgressBar
@@ -59,153 +52,6 @@ class MainActivity : Activity() {
     @Volatile private var streamRunning = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("rvc_prefs", MODE_PRIVATE) }
-
-    /** P0 测试:循环把哔哔声灌进虚拟麦克风;再按一次停止恢复真麦。 */
-    private fun runRackTest() {
-        val path = "/sdcard/Download/glassmic_test.wav"
-        if (PcmTestSource.isActive()) {
-            PcmTestSource.stop()
-            RackState.enabled = false
-            RackState.source = SourceType.REAL_MIC
-            log("已停止注入,恢复真麦直通")
-            return
-        }
-        if (!File(path).exists()) {
-            log("测试音不存在: $path")
-            return
-        }
-        if (RvcPcmSource.isActive()) RvcPcmSource.stop()
-        val ok = PcmTestSource.start(path, loop = true)
-        if (!ok) {
-            log("测试音加载失败")
-            return
-        }
-        RackState.enabled = true
-        RackState.source = SourceType.FILE
-        log("哔哔循环注入中…去录音机录,再按此按钮停止")
-    }
-
-    /** 验证实验:录 3s 真麦 → RVC 变声 → 存 40k WAV → 走哔哔那套 PcmTestSource 循环注入。
-     * 目的:确认"RVC 内容 + 哔哔传输路"是否打通;再按一次停止恢复真麦。 */
-    private fun runRecordRvcWavInject() {
-        val path = File(filesDir, "rvc_inject.wav").absolutePath
-        if (PcmTestSource.isActive()) {
-            PcmTestSource.stop()
-            RackState.enabled = false
-            RackState.source = SourceType.REAL_MIC
-            log("已停止 WAV 注入,恢复真麦直通")
-            return
-        }
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
-            log("需授权麦克风,授权后重按")
-            return
-        }
-        val profile = profSwitch.isChecked
-        val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
-        val idx = idxInput.text.toString().toFloatOrNull() ?: 0.75f
-        val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
-        val f0m = f0Spinner.selectedItem.toString()
-        log("录音→RVC→WAV→注入 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s".format(key, rms, idx, prot, f0m))
-        Thread {
-            try {
-                ensurePy()
-                val sr = 16000
-                val n = sr * 3   // 3 秒
-                val minBuf = AudioRecord.getMinBufferSize(
-                    sr, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT)
-                val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sr,
-                    AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT, minBuf * 2)
-                if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                    log("录音初始化失败"); return@Thread
-                }
-                rec.startRecording()
-                val buf = FloatArray(n)
-                var rd = 0
-                while (rd < n) {
-                    val r = rec.read(buf, rd, n - rd, AudioRecord.READ_BLOCKING)
-                    if (r > 0) rd += r else break
-                }
-                rec.stop(); rec.release()
-                log("录音完成 $rd samples (%.1fs)".format(rd / sr.toFloat()))
-                if (rd < n) { log("录音不足,请重按重录"); return@Thread }
-                val inBytes = ByteArray(n * 4)
-                ByteBuffer.wrap(inBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(buf)
-                val outBytes = Python.getInstance().getModule("rvc_api")
-                    .callAttr("process_audio", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), inBytes, profile, key, rms, idx, prot, f0m)
-                    .toJava(ByteArray::class.java)
-                val outF = FloatArray(outBytes.size / 4)
-                ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
-                val outShort = ShortArray(outF.size)
-                for (i in outF.indices) {
-                    val v = outF[i]
-                    outShort[i] = when {
-                        v >= 1f -> 32767
-                        v <= -1f -> -32768
-                        else -> (v * 32767f).toInt()
-                    }.toShort()
-                }
-                writeWavPcm16(path, outShort, 40000)
-                log("RVC 完成: ${outF.size} samples @40k (%.2fs) → $path".format(outF.size / 40000.0))
-                // 停掉实时流式(如有),切到 WAV 循环注入
-                if (RvcPcmSource.isActive()) RvcPcmSource.stop()
-                streamRunning = false
-                val ok = PcmTestSource.start(path, loop = true)
-                if (!ok) { log("WAV 加载失败"); return@Thread }
-                RackState.enabled = true
-                RackState.source = SourceType.FILE
-                runOnUiThread { log("✅ WAV 循环注入中…去微信发语音,听是不是变声;再按此按钮停止") }
-            } catch (e: Throwable) {
-                log("WAV 注入失败: " + e)
-            }
-        }.start()
-    }
-
-    private fun writeWavPcm16(path: String, samples: ShortArray, sampleRate: Int) {
-        val dataSize = samples.size * 2
-        val buf = java.io.ByteArrayOutputStream()
-        fun w(s: String) = buf.write(s.toByteArray(Charsets.US_ASCII))
-        fun leInt(v: Int) { buf.write(v and 0xFF); buf.write((v shr 8) and 0xFF); buf.write((v shr 16) and 0xFF); buf.write((v shr 24) and 0xFF) }
-        fun leShort(v: Int) { buf.write(v and 0xFF); buf.write((v shr 8) and 0xFF) }
-        w("RIFF"); leInt(36 + dataSize); w("WAVE")
-        w("fmt "); leInt(16); leShort(1); leShort(1)
-        leInt(sampleRate); leInt(sampleRate * 2); leShort(2); leShort(16)
-        w("data"); leInt(dataSize)
-        java.io.FileOutputStream(path).use { out ->
-            out.write(buf.toByteArray())
-            val bb = java.nio.ByteBuffer.allocate(dataSize).order(ByteOrder.LITTLE_ENDIAN)
-            for (s in samples) bb.putShort(s)
-            out.write(bb.array())
-        }
-    }
-
-    /** 通过 LSPosed 动态作用域申请把 [pkg] 加进模块作用域(会弹授权) */
-    private fun requestScope(pkg: String) {
-        log("申请作用域: $pkg")
-        LsposedScopeManager.requestScope(pkg) { result ->
-            runOnUiThread {
-                when (result) {
-                    is ScopeRequestResult.Granted ->
-                        log("✅ 已授权 $pkg (重启目标 App 后生效)")
-                    is ScopeRequestResult.Failed ->
-                        log("❌ 授权失败 $pkg: ${result.error}")
-                    is ScopeRequestResult.Unsupported ->
-                        log("⚠️ LSPosed 服务未连接,无法申请")
-                }
-            }
-        }
-    }
-
-    private fun updateScopeStatus(tv: TextView, scope: List<String>?) {
-        tv.text = if (scope == null) {
-            "LSPosed 服务:未连接"
-        } else {
-            "LSPosed 服务:已连接\n作用域:${scope.joinToString(",")}"
-        }
-    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -247,45 +93,9 @@ class MainActivity : Activity() {
             text = "模拟"
             setOnClickListener { runSim() }
         }
-        val streamBtn = Button(this).apply {
-            text = "实时流式"
-            setOnClickListener {
-                if (streamRunning) {
-                    streamRunning = false
-                    log("停止实时流式")
-                } else {
-                    runStreamLive()
-                }
-            }
-        }
         val testLatBtn = Button(this).apply {
             text = "测延迟"
             setOnClickListener { runLatencyTest() }
-        }
-        val rackTestBtn = Button(this).apply {
-            text = "循环注入哔(再按停)"
-            setOnClickListener { runRackTest() }
-        }
-        val wavInjBtn = Button(this).apply {
-            text = "RVC→WAV注入(再按停)"
-            setOnClickListener { runRecordRvcWavInject() }
-        }
-        val micInjBtn = Button(this).apply {
-            text = "实时变声注入(再按停)"
-            setOnClickListener {
-                if (streamRunning) {
-                    streamRunning = false
-                    log("停止实时变声注入")
-                } else {
-                    runStreamLive(routeToMic = true)
-                }
-            }
-        }
-        budgetInput = EditText(this).apply {
-            setText(prefs.getString("latency_budget_ms", "1110"))
-            hint = "延迟预算(ms)"
-            inputType = android.text.InputType.TYPE_CLASS_NUMBER
-            setPadding(16, 0, 16, 0)
         }
         latencyView = TextView(this).apply {
             text = "实测延迟: ${prefs.getString("latency_measured_ms", "未测")} ms"
@@ -433,83 +243,12 @@ class MainActivity : Activity() {
             addView(latencyView, w)
             addView(testLatBtn, w)
         }
-        val rowStream = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            addView(paramCell("延迟预算(ms) 实时需<=370", budgetInput), w)
-            addView(streamBtn, w)
-        }
-        val rowRack = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            addView(rackTestBtn, w)
-            addView(wavInjBtn, w)
-            addView(micInjBtn, w)
-        }
         val rowHal = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
             addView(halBtn, w)
         }
 
-        // ---- 动态作用域:LSPosed API 102 XposedService ----
-        val scopeStatus = TextView(this).apply {
-            text = "LSPosed 服务:未连接"
-            textSize = 12f
-            setPadding(0, 12, 0, 0)
-        }
-        val scopeInput = EditText(this).apply {
-            setText("com.tencent.mm")
-            hint = "包名"
-            setPadding(16, 0, 16, 0)
-        }
-        val scopeBtn = Button(this).apply {
-            text = "申请"
-            setOnClickListener {
-                val pkg = scopeInput.text.toString().trim()
-                if (pkg.isBlank()) {
-                    log("包名为空")
-                    return@setOnClickListener
-                }
-                requestScope(pkg)
-            }
-        }
-        val wxBtn = Button(this).apply {
-            text = "微信"
-            setOnClickListener { requestScope("com.tencent.mm") }
-        }
-        val qqBtn = Button(this).apply {
-            text = "QQ"
-            setOnClickListener { requestScope("com.tencent.mobileqq") }
-        }
-        val syncScopeBtn = Button(this).apply {
-            text = "刷新作用域"
-            setOnClickListener {
-                val s = LsposedScopeManager.syncScope()
-                updateScopeStatus(scopeStatus, s)
-                log("当前作用域: ${s?.joinToString(",") ?: "null"}")
-            }
-        }
-        LsposedScopeManager.ensureRegistered(this)
-        LsposedScopeManager.setOnBindChange { bound ->
-            runOnUiThread {
-                val s = LsposedScopeManager.frameworkScope
-                updateScopeStatus(scopeStatus, if (bound) s else null)
-            }
-        }
-        val rowScopeInput = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            addView(scopeInput, w)
-            addView(scopeBtn, w)
-        }
-        val rowScopeQuick = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            val w = LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
-            addView(wxBtn, w)
-            addView(qqBtn, w)
-            addView(syncScopeBtn, w)
-        }
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(32, 32, 32, 32)
@@ -521,12 +260,7 @@ class MainActivity : Activity() {
             addView(rowF0)
             addView(rowBright)
             addView(rowLatency)
-            addView(rowStream)
-            addView(rowRack)
             addView(rowHal)
-            addView(scopeStatus)
-            addView(rowScopeInput)
-            addView(rowScopeQuick)
             addView(f0Progress)
             addView(scroll, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f))
@@ -833,226 +567,6 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    /** 实时流式: AudioRecord(16k) 连续录音 → RVCStream 状态机逐块变声 → AudioTrack(40k) 连续播放。
-     * 三线程(录音/处理/播放)+队列, 处理线程唯一调 Python。再按一次按钮停止。
-     * routeToMic=true 时不本地播放, 输出全部进 RvcPcmSource(虚拟麦管道), 同时把 RackState 打开为 FILE。 */
-    private fun runStreamLive(routeToMic: Boolean = false) {
-        if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) !=
-            android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            requestPermissions(arrayOf(android.Manifest.permission.RECORD_AUDIO), 1)
-            log("需授权麦克风,授权后重按 实时流式")
-            return
-        }
-        if (streamRunning) { log("实时流式已在运行, 再按一次停止"); return }
-        val profile = profSwitch.isChecked
-        val key = keyInput.text.toString().toIntOrNull() ?: 0
-        val rms = rmsInput.text.toString().toFloatOrNull() ?: 0.75f
-        val idx = idxInput.text.toString().toFloatOrNull() ?: 0.0f
-        val prot = protInput.text.toString().toFloatOrNull() ?: 0.33f
-        val budget = budgetInput.text.toString().toIntOrNull() ?: 370
-        prefs.edit().putString("latency_budget_ms", budget.toString()).apply()   // 持久化
-        streamRunning = true
-        if (routeToMic) {
-            if (PcmTestSource.isActive()) PcmTestSource.stop()
-            if (RvcPcmSource.isActive()) RvcPcmSource.stop()
-            RvcQueueSource.start()
-            MicFeedSource.reset()
-            // 前台服务防 MIUI 后台静音:微信在前台时本 App 仍在后台用麦
-            runCatching { startForegroundService(Intent(this, MicrophoneService::class.java)) }
-            RackState.enabled = true
-            RackState.source = SourceType.FILE
-            log("变声注入模式: RVC 输出 → 段队列虚拟麦(哔哔传输路)")
-        }
-        log("实时流式启动: 16k录音→RVCStream→40k播放 key=%d rms=%.2f idx=%.2f prot=%.2f 预算=%dms".format(
-            key, rms, idx, prot, budget))
-        Thread {
-            try {
-                ensurePy()
-                val mod = Python.getInstance().getModule("rvc_api")
-                // 预热: 触发 rmvpe64/hubert/z/dec 首次 init + 索引 160MB 加载, 避免首块卡几秒
-                log("预热 NPU 管线(约数秒)…")
-                mod.callAttr(
-                    "stream_create", nativeLibDir(), filesDir.absolutePath,
-                    android.os.Process.myUid(), profile, key, rms, idx, prot, 64, 12)
-                val warmIn = ByteArray(17760 * 6 * 4)  // 6 块静音 @48k
-                val w0 = System.currentTimeMillis()
-                mod.callAttr("stream_push", warmIn)
-                log("预热完成(%.0fs), 保持状态机直接进实时".format((System.currentTimeMillis() - w0) / 1000.0))
-                val inQueue = java.util.concurrent.LinkedBlockingQueue<FloatArray>()
-                val outQueue = java.util.concurrent.LinkedBlockingQueue<ByteArray>()
-                // 录音线程
-                val recThread = Thread {
-                    try {
-                        val chunk = 17760  // 370ms@48k
-                        val buf = FloatArray(chunk)
-                        var nRead = 0; var nFull = 0; var nShort = 0
-                        var lastShortR = 0
-                        var peakSum = 0f; var peakCount = 0
-                        fun recordBlock(r: Int) {
-                            nRead++
-                            var peak = 0f
-                            for (i in 0 until r) {
-                                val v = buf[i]
-                                val a = if (v < 0) -v else v
-                                if (a > peak) peak = a
-                            }
-                            peakSum += peak; peakCount++
-                            if (r == chunk) nFull++ else { nShort++; lastShortR = r }
-                            if (nRead % 30 == 0) {
-                                log("录音: 30次read 满块=%d 短块=%d(最近短块r=%d/17760) 峰值=%.3f".format(
-                                    nFull, nShort, lastShortR, peakSum / peakCount.coerceAtLeast(1)))
-                                nFull = 0; nShort = 0; peakSum = 0f; peakCount = 0
-                            }
-                        }
-                        val srIn = 48000
-                        val minBuf = AudioRecord.getMinBufferSize(
-                            srIn, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT)
-                        val rec = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, srIn,
-                            AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_FLOAT, minBuf * 4)
-                        if (rec.state != AudioRecord.STATE_INITIALIZED) {
-                            log("LIVE FAIL: 录音初始化失败"); return@Thread
-                        }
-                        rec.startRecording()
-                        while (streamRunning) {
-                            // READ_BLOCKING: 攒满 5920(370ms) 才返回, 否则碎块(320采样)把 inQueue/处理端拖垮
-                            val r = rec.read(buf, 0, chunk, AudioRecord.READ_BLOCKING)
-                            if (r > 0) {
-                                recordBlock(r)
-                                inQueue.put(if (r == chunk) buf else buf.copyOf(r))
-                            } else if (r < 0) { break }
-                            else { Thread.sleep(5) }
-                        }
-                        rec.stop(); rec.release()
-                    } catch (e: Throwable) { log("录音线程: " + e) }
-                }
-                // 处理线程(唯一调 Python 流式)
-                val procThread = Thread {
-                    try {
-                        val mod = Python.getInstance().getModule("rvc_api")
-                        var last = System.currentTimeMillis()
-                        var recent = java.util.ArrayList<Long>()
-                        var gaps = java.util.ArrayList<Long>()
-                        while (streamRunning || inQueue.isNotEmpty()) {
-                            val f = inQueue.poll(1, java.util.concurrent.TimeUnit.MILLISECONDS) ?: continue
-                            val now = System.currentTimeMillis()
-                            gaps.add(now - last); last = now
-                            val inBytes = ByteArray(f.size * 4)
-                            ByteBuffer.wrap(inBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(f)
-                            val out = mod.callAttr("stream_push", inBytes)
-                                .toJava(ByteArray::class.java)
-                            val dt = System.currentTimeMillis() - now
-                            if (out.size > 0) {
-                                recent.add(dt)
-                                if (recent.size >= 6) {
-                                    log("T_proc最近6块=[%s]ms 块间gap均值%dms 录音队%d 输出队%d".format(
-                                        recent.joinToString { "%.0f".format(it.toDouble()) },
-                                        gaps.sum() / gaps.size, inQueue.size, outQueue.size))
-                                    recent.clear(); gaps.clear()
-                                }
-                                outQueue.put(out)
-                            }
-                        }
-                    } catch (e: Throwable) { log("处理线程: " + e) }
-                }
-                // 输出线程: routeToMic=false → AudioTrack 本地监听; true → 进 RvcPcmSource 虚拟麦
-                val playThread = Thread {
-                    try {
-                        if (routeToMic) {
-                            // 变声注入: 不本地播放, 输出全部进段队列(哔哔传输路); 先预填吸收处理突刺
-                            val prefillBlocks = maxOf(1, (budget + 369) / 370)
-                            var pushed = 0
-                            while (pushed < prefillBlocks && (streamRunning || outQueue.isNotEmpty())) {
-                                val p = outQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (p == null) { if (!streamRunning) break else continue }
-                                RvcQueueSource.pushFloatBytes(p); pushed++
-                            }
-                            log("变声注入: 预填 $pushed 块(≈${pushed * 370}ms) 到段队列")
-                            while (streamRunning || outQueue.isNotEmpty()) {
-                                val out = outQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (out == null) { Thread.sleep(1); continue }
-                                RvcQueueSource.pushFloatBytes(out); pushed++
-                                if (pushed % 10 == 0) {
-                                    log("变声注入: 已推 $pushed 块 队列${RvcQueueSource.bufferedBlocks()}块(${RvcQueueSource.bufferedMs()}ms) 输出队${outQueue.size}")
-                                }
-                            }
-                        } else {
-                            val srOut = 40000
-                            val minOut = AudioTrack.getMinBufferSize(
-                                srOut, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_FLOAT)
-                            var played = 0; var underrun = 0; var written = 0L
-                            // 播放预填: "延迟预算(ms)" 框 → 预填块数(吸收处理突刺, 端到端延迟≈预算)
-                            // budget 370→1块, 700→2块, 1110→3块... 每块=370ms@40k
-                            val blkOut = 59200   // 370ms 一块 = 14800 采样 × 4B
-                            val prefillBlocks = maxOf(1, (budget + 369) / 370)
-                            val needBuf = maxOf(minOut * 4, prefillBlocks * blkOut + blkOut)
-                            val tr = AudioTrack.Builder()
-                                .setAudioAttributes(AudioAttributes.Builder()
-                                    .setUsage(AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build())
-                                .setAudioFormat(AudioFormat.Builder()
-                                    .setSampleRate(srOut)
-                                    .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-                                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
-                                .setBufferSizeInBytes(needBuf)
-                                .setTransferMode(AudioTrack.MODE_STREAM)
-                                .build()
-                            var preFilled = 0
-                            while (preFilled < prefillBlocks && (streamRunning || outQueue.isNotEmpty())) {
-                                val p = outQueue.poll(200, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (p == null) { if (!streamRunning) break else continue }
-                                val pf = FloatArray(p.size / 4)
-                                ByteBuffer.wrap(p).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(pf)
-                                written += tr.write(pf, 0, pf.size, AudioTrack.WRITE_BLOCKING)
-                                preFilled++
-                            }
-                            log("播放: 预填 $preFilled 块(≈${preFilled * 370}ms 缓冲) 后 play")
-                            tr.play()
-                            while (streamRunning || outQueue.isNotEmpty()) {
-                                val out = outQueue.poll(10, java.util.concurrent.TimeUnit.MILLISECONDS)
-                                if (out == null) {
-                                    // 真欠播:AudioTrack 内部已无可播数据才 +1(队列空但缓冲区有货不算)
-                                    if (written - tr.getPlaybackHeadPosition() <= 0) underrun++
-                                    continue
-                                }
-                                val outF = FloatArray(out.size / 4)
-                                ByteBuffer.wrap(out).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
-                                written += tr.write(outF, 0, outF.size, AudioTrack.WRITE_BLOCKING)
-                                played++
-                                if (played % 10 == 0) log("播放: %d段 欠播%d次 队列%d".format(played, underrun, outQueue.size))
-                            }
-                            tr.stop(); tr.release()
-                        }
-                    } catch (e: Throwable) { log("播放/注入线程: " + e) }
-                }
-                // 实时截幅诊断: 每秒打一次输入/输出峰值与削波数(上屏 + logcat)
-                val dbgThread = Thread {
-                    while (streamRunning) {
-                        try {
-                            val s = mod.callAttr("stream_debug_snapshot").toString()
-                            if (s.isNotBlank()) log("[dbg] " + s)
-                        } catch (_: Throwable) {}
-                        Thread.sleep(1000)
-                    }
-                }
-                recThread.start(); procThread.start(); playThread.start(); dbgThread.start()
-                recThread.join(); procThread.join(); playThread.join(); dbgThread.join()
-                log("实时流式结束")
-            } catch (e: Throwable) {
-                log("LIVE STREAM FAIL: " + e)
-            } finally {
-                streamRunning = false
-                if (routeToMic) {
-                    RvcQueueSource.stop()
-                    if (RvcPcmSource.isActive()) RvcPcmSource.stop()
-                    MicFeedSource.reset()
-                    runCatching { stopService(Intent(this, MicrophoneService::class.java)) }
-                    RackState.enabled = false
-                    RackState.source = SourceType.REAL_MIC
-                    log("变声注入已停止,恢复真麦直通")
-                }
-            }
-        }.start()
-    }
 
     /** 递归复制 assets 子目录到 filesDir,已存在文件跳过、缺失补拷(参考 GSV)。 */
     private fun extract(src: String, dst: File) {
