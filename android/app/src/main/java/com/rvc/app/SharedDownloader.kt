@@ -33,11 +33,14 @@ object SharedDownloader {
         SHARED_URLS.filter { it.third && !it.second.contains("<") }
             .map { Source(it.first, it.second) }
 
-    /** 探测两个源,返回可达且延迟最低的;都不可达返回 null。 */
-    fun probeAndPick(): Source? {
+    /** 探测默认两个源,返回可达且延迟最低的;都不可达返回 null。 */
+    fun probeAndPick(): Source? = probeAndPick(availableSources())
+
+    /** 探测任意源列表,返回可达且延迟最低的;都不可达返回 null。 */
+    fun probeAndPick(sources: List<Source>): Source? {
         var best: Source? = null
         var bestMs = Long.MAX_VALUE
-        for (s in availableSources()) {
+        for (s in sources) {
             try {
                 val t0 = System.nanoTime()
                 val conn = URL(s.url).openConnection() as HttpURLConnection

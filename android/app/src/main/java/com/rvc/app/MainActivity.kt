@@ -295,6 +295,10 @@ class MainActivity : Activity() {
             text = "下载共享件"
             setOnClickListener { downloadShared() }
         }
+        val onlineBtn = Button(this).apply {
+            text = "在线角色库"
+            setOnClickListener { openOnlineLibrary() }
+        }
         setupProgress = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             max = 100
             visibility = View.GONE
@@ -315,6 +319,7 @@ class MainActivity : Activity() {
             addView(importRoleBtn, w)
             addView(importSharedBtn, w)
             addView(downloadSharedBtn, w)
+            addView(onlineBtn, w)
         }
 
         val root = LinearLayout(this).apply {
@@ -888,6 +893,157 @@ class MainActivity : Activity() {
     }
 
 
+
+    private fun openOnlineLibrary() {
+        setupProgress.visibility = View.VISIBLE
+        setupProgress.progress = 0
+        setupStatus.text = "拉取在线目录…"
+        Thread {
+            val catalog = Catalog.fetch()
+            if (catalog == null) {
+                runOnUiThread {
+                    setupStatus.text = "在线目录不可达 → 请检查网络"
+                    setupProgress.visibility = View.GONE
+                }
+                log("在线目录不可达")
+                return@Thread
+            }
+            val soc = RoleManager.detectSoc()
+            val shared = Catalog.compatibleShared(catalog, soc)
+            val roles = Catalog.compatibleRoles(catalog, soc)
+            runOnUiThread {
+                setupProgress.visibility = View.GONE
+                val items = mutableListOf<String>()
+                val actions = mutableListOf<() -> Unit>()
+                if (shared == null) {
+                    items.add("共享件:未找到本机($soc)可用包")
+                    actions.add {}
+                } else {
+                    val ready = RoleManager.isSharedReady(filesDir)
+                    items.add(if (ready) "共享件:${shared.name} [已就绪]" else "共享件:${shared.name} [可下载]")
+                    actions.add { if (!ready) downloadSharedFromCatalog(shared) }
+                }
+                if (roles.isEmpty()) {
+                    items.add("角色:暂无授权角色")
+                    actions.add {}
+                } else {
+                    for ((role, file) in roles) {
+                        items.add("角色:${role.name} (${file.size / 1048576}MB)")
+                        actions.add { downloadRoleFromCatalog(role, file) }
+                    }
+                }
+                AlertDialog.Builder(this)
+                    .setTitle("在线角色库")
+                    .setItems(items.toTypedArray()) { _, which -> actions[which].invoke() }
+                    .setNegativeButton("关闭", null)
+                    .show()
+            }
+        }.start()
+    }
+
+    private fun downloadSharedFromCatalog(entry: Catalog.SharedEntry) {
+        setupProgress.visibility = View.VISIBLE
+        setupProgress.progress = 0
+        setupStatus.text = "探测共享件源…"
+        Thread {
+            val src = SharedDownloader.probeAndPick(entry.mirrors.map { SharedDownloader.Source(it.key, it.value) })
+            if (src == null) {
+                runOnUiThread {
+                    setupStatus.text = "共享件源不可达 → 请用 SAF 导入"
+                    setupProgress.visibility = View.GONE
+                }
+                return@Thread
+            }
+            val dest = File(filesDir, "shared.zip")
+            runOnUiThread { setupStatus.text = "从 ${src.name} 下载共享件…" }
+            val ok = SharedDownloader.download(src, dest, { done, total ->
+                runOnUiThread {
+                    if (total != null && total > 0) {
+                        setupProgress.progress = ((done * 100) / total).toInt()
+                        setupStatus.text = "下载 ${done / 1048576}MB / ${total / 1048576}MB"
+                    } else {
+                        setupStatus.text = "下载 ${done / 1048576}MB…"
+                    }
+                }
+            })
+            if (!ok) {
+                runOnUiThread {
+                    setupStatus.text = "共享件下载失败 → 请用 SAF 导入"
+                    setupProgress.visibility = View.GONE
+                }
+                return@Thread
+            }
+            try {
+                RoleManager.importZipFile(dest, filesDir)
+                dest.delete()
+                runOnUiThread {
+                    refreshSharedStatus()
+                    setupStatus.text = "共享件下载+解压完成 ✔"
+                    setupProgress.visibility = View.GONE
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    setupStatus.text = "共享件解压/校验失败: $e"
+                    setupProgress.visibility = View.GONE
+                }
+                log("shared 解压失败: $e")
+            }
+        }.start()
+    }
+
+    private fun downloadRoleFromCatalog(role: Catalog.RoleEntry, file: Catalog.RoleFile) {
+        if (file.mirrors.isEmpty()) {
+            setupStatus.text = "角色 ${role.name} 没有可用镜像"
+            return
+        }
+        setupProgress.visibility = View.VISIBLE
+        setupProgress.progress = 0
+        setupStatus.text = "探测角色源…"
+        Thread {
+            val src = SharedDownloader.probeAndPick(file.mirrors.map { SharedDownloader.Source(it.key, it.value) })
+            if (src == null) {
+                runOnUiThread {
+                    setupStatus.text = "角色源不可达"
+                    setupProgress.visibility = View.GONE
+                }
+                return@Thread
+            }
+            val dest = File(filesDir, "role_${role.id}.zip")
+            runOnUiThread { setupStatus.text = "从 ${src.name} 下载角色 ${role.name}…" }
+            val ok = SharedDownloader.download(src, dest, { done, total ->
+                runOnUiThread {
+                    if (total != null && total > 0) {
+                        setupProgress.progress = ((done * 100) / total).toInt()
+                        setupStatus.text = "下载 ${done / 1048576}MB / ${total / 1048576}MB"
+                    } else {
+                        setupStatus.text = "下载 ${done / 1048576}MB…"
+                    }
+                }
+            })
+            if (!ok) {
+                runOnUiThread {
+                    setupStatus.text = "角色下载失败"
+                    setupProgress.visibility = View.GONE
+                }
+                return@Thread
+            }
+            try {
+                RoleManager.importZipFile(dest, filesDir)
+                dest.delete()
+                runOnUiThread {
+                    refreshRoles()
+                    setupStatus.text = "角色 ${role.name} 安装完成 ✔"
+                    setupProgress.visibility = View.GONE
+                }
+            } catch (e: Throwable) {
+                runOnUiThread {
+                    setupStatus.text = "角色解压/校验失败: $e"
+                    setupProgress.visibility = View.GONE
+                }
+                log("角色安装失败: $e")
+            }
+        }.start()
+    }
 
     /** 递归复制 assets 子目录到 filesDir,已存在文件跳过、缺失补拷(参考 GSV)。 */
     private fun extract(src: String, dst: File) {

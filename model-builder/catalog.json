@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "app_min_version": "0.2.0",
+  "devices": {
+    "sm8475": { "soc_id": 42, "v": "V69" },
+    "sm8450": { "soc_id": 36, "v": "V69" },
+    "sm7475": { "soc_id": 54, "v": "V69" },
+    "sm8550": { "soc_id": 43, "v": "V73" },
+    "sm8635": { "soc_id": 68, "v": "V73" },
+    "sm7675": { "soc_id": 70, "v": "V73" },
+    "sm8650": { "soc_id": 57, "v": "V75" },
+    "sm8750": { "soc_id": 69, "v": "V79" },
+    "sm8850": { "soc_id": 87, "v": "V81" }
+  },
+  "shared": [
+    {
+      "id": "shared-v69-42",
+      "name": "共享件 V69/42 (8+ Gen 1)",
+      "soc": "sm8475",
+      "file": "shared-v69-42.zip",
+      "sha256": "d8a58871bb8ed77e283cc7034e7a37e12bd7c03c9b33a538deb129581aa127e9",
+      "size": 427794661,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-42.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-42.zip"
+      }
+    }
+  ],
+  "roles": []
+}

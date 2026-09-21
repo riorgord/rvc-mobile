@@ -25,8 +25,25 @@ object RoleManager {
     private const val TAG = "RoleManager"
     const val PREF_ROLE = "current_role_id"
 
-    /** 本机期望的 HTP 架构(sm8475 = V69)。QNN 编译产物绑死架构,对不上不能用。 */
-    const val EXPECTED_ARCH = "sm8475"
+    /** 本机期望的 HTP 架构(如 sm8475 = V69)。QNN 编译产物绑死架构,对不上不能用。 */
+    val EXPECTED_ARCH: String get() = detectSoc().ifEmpty { "sm8475" }
+
+    /** 探测本机 SoC 型号(小写)。优先 ro.soc.model,回退 ro.board.platform。 */
+    fun detectSoc(): String {
+        return try {
+            val p = ProcessBuilder("getprop", "ro.soc.model").start()
+            val s = p.inputStream.bufferedReader().readText().trim().lowercase()
+            p.waitFor()
+            if (s.isNotEmpty()) s else {
+                val p2 = ProcessBuilder("getprop", "ro.board.platform").start()
+                val s2 = p2.inputStream.bufferedReader().readText().trim().lowercase()
+                p2.waitFor()
+                s2
+            }
+        } catch (t: Throwable) {
+            "sm8475"
+        }
+    }
 
     /** 共享件最小集合(shared.zip manifest 里应包含这些)。 */
     val REQUIRED_SHARED = arrayOf(
