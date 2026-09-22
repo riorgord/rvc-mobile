@@ -35,6 +35,14 @@ SHARED_FILES = [
     "periphery/proj.bin",
 ]
 
+# 许可证文本 + NOTICE(声明组件来源与版权)。随 zip 一起分发,App 运行时不使用。
+LICENSE_FILES = [
+    "LICENSES/MIT.txt",
+    "LICENSES/Apache-2.0.txt",
+    "LICENSES/AGPL-3.0.txt",
+    "LICENSES/NOTICE.md",
+]
+
 ARCH = "sm8475"
 SDK_VERSION = "2.47"
 VERSION = 1
@@ -74,6 +82,22 @@ def build(assets, out_dir, zip_path):
                       "sha256": sha256_file(dst)})
         print("  [%d/%d] %s (%d)" % (len(files), len(SHARED_FILES), rel, files[-1]["size"]))
 
+    # 拷贝许可证 + NOTICE(随 zip 分发)
+    for rel in LICENSE_FILES:
+        src = os.path.join(assets, *rel.split("/"))
+        if not os.path.isfile(src):
+            print("[warn] 缺许可证文件(跳过): %s" % rel)
+            continue
+        dst = os.path.join(out_dir, *rel.split("/"))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(src, "rb") as ins, open(dst, "wb") as outs:
+            while True:
+                b = ins.read(1 << 20)
+                if not b:
+                    break
+                outs.write(b)
+        print("  [license] %s (%d)" % (rel, os.path.getsize(dst)))
+
     manifest = {"type": "shared", "arch": ARCH, "sdk_version": SDK_VERSION,
                 "version": VERSION, "files": files}
     mpath = os.path.join(out_dir, "manifest.json")
@@ -88,8 +112,9 @@ def build(assets, out_dir, zip_path):
                     full = os.path.join(root, name)
                     rel = os.path.relpath(full, out_dir).replace("\\", "/")
                     zf.write(full, rel)
+        n_total = sum(len(ns) for _, _, ns in os.walk(out_dir))
         print("[ok] shared.zip: %s (%d bytes, ZIP_STORED, %d 文件)"
-              % (zip_path, os.path.getsize(zip_path), len(files) + 1))
+              % (zip_path, os.path.getsize(zip_path), n_total))
 
 
 def verify(zip_path):
@@ -116,6 +141,7 @@ def verify(zip_path):
             else:
                 print("[ok] %s" % name)
         extra = [n for n in names if n != "manifest.json"
+                 and not n.startswith("LICENSES/")
                  and n not in {f["name"] for f in manifest.get("files", [])}]
         if extra:
             print("[warn] zip 里多余文件: %s" % extra)

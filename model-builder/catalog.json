@@ -18,8 +18,8 @@
       "name": "共享件 V69/42 (8+ Gen 1)",
       "soc": "sm8475",
       "file": "shared-v69-42.zip",
-      "sha256": "d8a58871bb8ed77e283cc7034e7a37e12bd7c03c9b33a538deb129581aa127e9",
-      "size": 427794661,
+      "sha256": "4b4fcab2828d60f0e8a7c80c5e55739a9c685486e75802e9ea93a23404afaf1c",
+      "size": 427841863,
       "mirrors": {
         "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-42.zip",
         "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-42.zip"
