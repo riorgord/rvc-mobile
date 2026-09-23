@@ -1,41 +1,65 @@
-# rvc_app — RVC 手机实时变声 App（Android）
+# RVC Mobile
 
-> 阶段决策（2026-08-23）：**App 化优先**。纯 NPU 计算其实只有 ~1.68s（hubert 0.2s + rmvpe 0.12s + gen 1.35s），
-> qnn-net-run 的 wall 4.1s 里 ~2.4s 是 host 开销（文件 IO + context 加载 + 子进程）。
-> App 化（常驻进程 + QNN 内存 API + context 复用）→ wall 压到 ~1.8-2.0s，**接近实时（2.24s）**。
+自研 RVC 实时变声引擎(Android)。通过 Magisk/KernelSU 虚拟 HAL 把系统麦克风接管成“可编程麦克风”,App 内加载角色包(RVC 模型)实时变声,可注入微信/QQ/游戏等任意使用系统麦克风的应用。
 
-## 目标
-原生 Android App，APK 内打包 3 个模型 + QNN 运行库，普通 App 权限（unsigned PD）启用 HTP NPU，跑通 RVC 全链路变声。
+> 状态:开发中。当前仓库为 App 工程 + 模型打包脚本,不包含任何未授权音源。
 
-## 需求（用户明确）
-- **profiling 开关**：App 里做一个开关（设置/开发者选项），可控制是否输出 profiling 数据到 **`/sdcard/rvc_exp/`**
-  - 默认 OFF（性能优先）；ON 时启用 QNN profiling（对应 qnn-net-run 的 `--profiling_level`，走 qnn_profile API）并把 profiling 文件/execution_metadata 写到 `/sdcard/rvc_exp/`
-  - ⚠️ scoped storage 坑：Android 11+ 普通 App 不能直接写 `/sdcard` 根。方案：a) 申请 `MANAGE_EXTERNAL_STORAGE`（"所有文件访问"特殊权限，调试期可接受）b) 写 `/sdcard/Android/data/<pkg>/files/rvc_exp`（免特殊权限，adb 也能拉）——M0 先定方案 a，发布前降级
-  - profiling 开关与性能测试复用：开关 ON 一次跑出 detailed profiling（各段 op cycles），OFF 跑真实 wall
+## 特性
 
-## 模型（先打包进 APK，发布再调整）
-| bin | 大小 | 源 |
-|---|---|---|
-| hubert_mix_def_t4800.bin | 190MB | `../mobile_prep/rvc_success_exp/models/` |
-| rmvpe_fp32_256.bin | 178MB | 同上 |
-| gen_fp32.bin | 63MB | 同上 |
+- 虚拟 HAL 麦克风(`audio.primary.rvc.so` 包装器 + `rvc_relay` 开机自启)
+- 实时 RVC 流式推理(QNN/HTP NPU 加速)
+- 角色包:单 zip 导入/导出,本地管理
+- 共享件(hubert/rmvpe/fcpe/df3r + periphery)首启在线下载,支持抱脸/魔塔双镜像
+- catalog.json 在线索引:按设备 SoC 自动过滤可用资源
+- 支持设备表见 `model-builder/catalog.json` 的 `devices` 字段
 
-## 待定/调研中
-- [ ] unsigned PD 激活清单（subagent 调研 anima_phone + gpt-sovits 中）
-- [ ] App 形态：Kotlin + JNI（C 调 QNN）vs 服务化
-- [ ] 模型放置：assets/ 解压 vs 直接打包
-- [ ] 前端：AudioRecord 采集 → 处理 → AudioTrack（实时）vs 文件输入（先验证）
+## 仓库结构
 
-## 性能基线（修好后，手机实测）
-| 环节 | wall(无prof) | 纯NPU | host |
-|---|---|---|---|
-| hubert | 1021ms | ~200ms | ~820ms |
-| rmvpe | 1017ms | 123ms | ~894ms |
-| gen_fp32 | 2050ms | 1354ms | ~696ms |
-| Σ | ~4.09s | ~1.68s | ~2.4s |
+```
+android/                 Android App 工程
+  app/src/main/assets/     APK 内置资源(hexagon-v69 / testdata / rvc_module.zip)
+  app/src/main/java/...    Kotlin 源码
+model-builder/            RVC 模型转换/打包工具
+  build_shared.py          shared.zip 打包脚本(含 LICENSES)
+  build_role.py            角色包打包脚本(如存在)
+  convert.py               ONNX -> QNN DLC 转换
+  shared_src/              共享件源文件(不入库,gitignore)
+  LICENSES/               许可证文本(随 shared.zip 分发)
+LICENSE                   App 代码许可证(GPL-3.0)
+THIRD_PARTY_NOTICES.md    第三方组件与许可声明
+docs/                     发布与合规文档
+```
 
-## 里程碑
-1. M0：APK 打包 3 模型 + libQnnHtp + hexagon-v69，unsigned PD 激活成功，单模型推理（文件输入）输出正确
-2. M1：JNI 常驻服务，3 模型全链路跑通，wall ≈ 纯计算
-3. M2：音频 IO（AudioRecord/AudioTrack）实时回路
-4. M3：性能优化（dec 减帧 / 流式 / 流水线）
+## 构建
+
+```bash
+# Android APK
+cd android
+./gradlew clean :app:assembleDebug
+# 注意:删除/变更 assets 里的大文件后必须 clean 重建,否则 APK 会虚胖
+
+# 共享件打包
+python model-builder/build_shared.py \
+  --assets model-builder/shared_src \
+  --out <staging> \
+  --zip <output>/shared-v69-42.zip
+```
+
+## 在线目录(catalog)
+
+- 索引文件:`catalog.json`(仓库根目录)
+- 镜像:抱脸 `riorgord/rvc-mobile-share`、魔塔 `rirogord/rvc-mobile-share`
+- App 流程:拉取 catalog → 识别本机 SoC → 过滤可用 shared/roles → 下载 + SHA256 校验
+- 当前 `roles` 为空:角色包只在获得干净授权/从零训练后才会收录
+
+## 许可
+
+- App 代码:**GPL-3.0**(见 `LICENSE`,商业集成可另行授权,见 `docs/DUAL_LICENSE.md`)
+- 共享件:MIT + Apache-2.0 混合(详见 `THIRD_PARTY_NOTICES.md`)
+- 角色包:仅收录有明确授权/版权干净的模型;游戏厂音源、CC-BY-NC 等一律只允许本地导入
+
+## 红线
+
+- 不收录、不传播任何游戏厂/未授权音源(米哈游、NEXON、库洛、鹰角、SHIFT UP 等)
+- 语雀作者那批(CC-BY-NC + 禁二次配布)只做本地导入
+- RVC 官方 lj1995 底模带「仅供研究使用」条款,基于它的微调模型不进 catalog
