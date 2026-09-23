@@ -40,8 +40,12 @@
 | ONNX Runtime | microsoft/onnxruntime | MIT | `libonnxruntime.so` |
 | LLVM libc++ | LLVM 项目 | Apache-2.0 + LLVM 例外 | `libc++.so` |
 | Android 平台库(AOSP) | Android Open Source Project | Apache-2.0 | libbase / cutils / hardware / hidl / log / utils 等 |
-| Qualcomm QNN/HTP 运行时 | Qualcomm | 专有(Qualcomm SDK 条款) | libQnnHtp* / libQnnSystem / libcdsprpc / libqti_dsp / assets/hexagon-v69/* |
+| Qualcomm QNN/HTP 运行时 | Qualcomm | 专有(QTI AI Stack License) | libQnnHtp* / libQnnSystem / assets/hexagon-v69/*(来自 QNN SDK) |
 | Kotlin 标准库 | JetBrains | Apache-2.0 | 随 APK |
 | libgsv_qnn.so | 本项目 | GPL-3.0 | 自有 QNN 推理封装 |
 
-> 说明:Qualcomm 相关库来自 Qualcomm QNN/Hexagon SDK,随 APK 分发需遵守 Qualcomm 的许可条款。完整清单以构建配置为准,若有遗漏以各依赖自带许可证为准。
+> **Qualcomm 分发说明**:
+> - `libQnnHtp*`、`libQnnSystem`、`assets/hexagon-v69/*` 来自 **QNN SDK**,受 **QTI AI Stack License** 约束。该许可**允许以对象码形式、作为应用的一部分分发/再许可**,但**禁止单独分发**;同时不得反编译/移除版权声明,并需遵守出口管制等条款。
+> - **Hexagon SDK(社区版)** 是另一份更严格的协议,明确禁止再分发;本项目分发物中的 hexagon-v69 文件来自 QNN SDK 而非 Hexagon SDK。
+> - `libcdsprpc.so`、`libqti_dsp.so` 等若来自设备镜像(而非 SDK),其再分发许可需另行确认;建议尽量不打包,改为使用设备自带库。
+> - 完整清单以构建配置为准,若有遗漏以各依赖自带许可证为准。
