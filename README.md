@@ -54,7 +54,7 @@ python model-builder/build_shared.py \
 
 ## 许可
 
-- App 代码:**GPL-3.0**(见 `LICENSE`,商业集成可另行授权,见 `docs/DUAL_LICENSE.md`)
+- App 代码:**GPL-3.0**(见 `LICENSE`)
 - 共享件:MIT + Apache-2.0 混合(详见 `THIRD_PARTY_NOTICES.md`)
 - 角色包:仅收录有明确授权/版权干净的模型;游戏厂音源、CC-BY-NC 等一律只允许本地导入
 
