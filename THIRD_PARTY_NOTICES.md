@@ -31,6 +31,17 @@
 | 游戏厂/未授权音源 | 米哈游、NEXON、库洛、鹰角、SHIFT UP 等一律不收录 |
 | CC-BY-NC 模型 | 语雀作者那批(CC-BY-NC + 禁二次配布)只允许本地导入 |
 
-## 其它依赖
+## APK 运行依赖
 
-Android 构建产物还包含 AndroidX、Kotlin 标准库等常规依赖,完整清单以构建配置为准。若有遗漏,以各依赖自带许可证为准。
+| 组件 | 来源 | 许可证 | 说明 |
+|---|---|---|---|
+| numpy | NumPy 项目 | BSD-3-Clause | Python 运行时数组计算 |
+| Chaquopy 运行时 | chaquo/chaquopy | MIT | Python 嵌入运行时 |
+| ONNX Runtime | microsoft/onnxruntime | MIT | `libonnxruntime.so` |
+| LLVM libc++ | LLVM 项目 | Apache-2.0 + LLVM 例外 | `libc++.so` |
+| Android 平台库(AOSP) | Android Open Source Project | Apache-2.0 | libbase / cutils / hardware / hidl / log / utils 等 |
+| Qualcomm QNN/HTP 运行时 | Qualcomm | 专有(Qualcomm SDK 条款) | libQnnHtp* / libQnnSystem / libcdsprpc / libqti_dsp / assets/hexagon-v69/* |
+| Kotlin 标准库 | JetBrains | Apache-2.0 | 随 APK |
+| libgsv_qnn.so | 本项目 | GPL-3.0 | 自有 QNN 推理封装 |
+
+> 说明:Qualcomm 相关库来自 Qualcomm QNN/Hexagon SDK,随 APK 分发需遵守 Qualcomm 的许可条款。完整清单以构建配置为准,若有遗漏以各依赖自带许可证为准。
