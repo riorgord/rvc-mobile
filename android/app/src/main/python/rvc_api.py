@@ -45,6 +45,10 @@ def _preload(lib_dir):
              "libutils.so", "liblog.so", "libcutils.so", "libdmabufheap.so",
              "libbase.so", "libc++.so", "libc++_shared.so",
              "libQnnHtpV69Stub.so", "libQnnHtpV69CalculatorStub.so",
+             "libQnnHtpV73Stub.so", "libQnnHtpV73CalculatorStub.so",
+             "libQnnHtpV75Stub.so", "libQnnHtpV75CalculatorStub.so",
+             "libQnnHtpV79Stub.so", "libQnnHtpV79CalculatorStub.so",
+             "libQnnHtpV81Stub.so", "libQnnHtpV81CalculatorStub.so",
              "libQnnHtpNetRunExtensions.so",
              "vendor.qti.hardware.dsp@1.0.so"]
     for name in order:

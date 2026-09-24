@@ -32,7 +32,7 @@ import java.nio.ByteOrder
 
 /**
  * RVC 手机实时变声 M0:unsigned PD 激活 + gen_fp32 单模型自检。
- * - 启动解压 assets/hexagon-v69 + assets/testdata → filesDir(共享件 models/periphery 已移出 APK,首启下载)
+ * - 启动解压 assets/testdata → filesDir(QNN 运行时全在 jniLibs,按 SoC 自动选 arch;共享件 models/periphery 已移出 APK,首启下载)
  * - profiling 开关 → 传 rvc_api,输出到 /sdcard/rvc_exp
  * - "跑 gen 自检" 按钮:Python rvc_api.self_test → 对比 PC 参考 corr/SNR
  */
@@ -356,12 +356,9 @@ class MainActivity : Activity() {
         log("filesDir=" + filesDir.absolutePath)
         // 解压 assets → filesDir(幂等)
 
-        extract("hexagon-v69", File(filesDir, "hexagon-v69"))
         extract("testdata", File(filesDir, "testdata"))
 
-        log("assets 解压 OK: hexagon %d / testdata %d".format(
-
-            File(filesDir, "hexagon-v69").listFiles()?.size ?: 0,
+        log("assets 解压 OK: testdata %d".format(
             File(filesDir, "testdata").listFiles()?.size ?: 0))
 
         // 默认管线预载:hubert + fcpe + gen 常驻(rmvpe 切换时现场加载+进度条)
