@@ -66,6 +66,8 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // 恢复用户手动选择的 SoC(识别失败时弹窗选择的)
+        RoleManager.setManualSoc(prefs.getString("soc_override", null))
 
         val scroll = ScrollView(this)
         logView = TextView(this).apply { textSize = 12f }
@@ -371,6 +373,10 @@ class MainActivity : Activity() {
             preloadDefault()
         } else {
             log("共享件缺失:请先 下载共享件 或 SAF 导入 shared.zip")
+        }
+        // SoC 探测失败且未手动选择 → 启动即弹窗让用户手动选(列表没有=不支持)
+        if (RoleManager.effectiveSoc().isEmpty()) {
+            resolveSoc(null) { _ -> }
         }
     }
 
@@ -844,52 +850,65 @@ class MainActivity : Activity() {
     private fun downloadShared() {
         setupProgress.visibility = View.VISIBLE
         setupProgress.progress = 0
-        setupStatus.text = "探测下载源…"
+        setupStatus.text = "拉取目录并确认 SoC…"
         Thread {
-            val src = SharedDownloader.probeAndPick()
-            if (src == null) {
+            val catalog = Catalog.fetch()
+            if (catalog == null) {
                 runOnUiThread {
-                    setupStatus.text = "下载源不可达/未配置 → 请用 SAF 导入 shared.zip"
+                    setupStatus.text = "在线目录不可达 → 请用 SAF 导入 shared.zip"
                     setupProgress.visibility = View.GONE
                 }
-                log("下载源不可达或未配置,改用 SAF 导入")
+                log("在线目录不可达,改用 SAF 导入")
                 return@Thread
             }
-            val dest = File(filesDir, "shared.zip")
-            runOnUiThread { setupStatus.text = "从 ${src.name} 下载…" }
-            val ok = SharedDownloader.download(src, dest, { done, total ->
-                runOnUiThread {
-                    if (total != null && total > 0) {
-                        setupProgress.progress = ((done * 100) / total).toInt()
-                        setupStatus.text = "下载 ${done / 1048576}MB / ${total / 1048576}MB"
-                    } else {
-                        setupStatus.text = "下载 ${done / 1048576}MB…"
-                    }
-                }
-            })
-            if (!ok) {
-                runOnUiThread {
-                    setupStatus.text = "下载失败 → 请用 SAF 导入"
+            resolveSoc(catalog) { soc ->
+                if (soc == null) {
                     setupProgress.visibility = View.GONE
+                    setupStatus.text = "未选择 SoC → 请用 SAF 导入 shared.zip"
+                    return@resolveSoc
                 }
-                return@Thread
-            }
-            try {
-                RoleManager.importZipFile(dest, filesDir)
-                dest.delete()
-                runOnUiThread {
-                    refreshSharedStatus()
-                    setupStatus.text = "共享件下载+解压完成 ✔"
+                val shared = Catalog.compatibleShared(catalog, soc)
+                if (shared == null) {
                     setupProgress.visibility = View.GONE
+                    setupStatus.text = "软件暂不支持 $soc（目录里没有对应共享件）"
+                    log("目录没有 $soc 的共享件")
+                    return@resolveSoc
                 }
-            } catch (e: Throwable) {
-                runOnUiThread {
-                    setupStatus.text = "解压/校验失败: $e"
-                    setupProgress.visibility = View.GONE
-                }
-                log("shared 解压失败: $e")
+                downloadSharedFromCatalog(shared)
             }
         }.start()
+    }
+
+    /**
+     * 确认本机 SoC:
+     * - 已手动选择/已探测到 → 直接回调;
+     * - 探测不到 → 弹窗让用户手动选择(列表来自 catalog devices;catalog 不可达时用内置支持列表)。
+     * 回调统一在主线程执行。
+     */
+    private fun resolveSoc(catalog: Catalog.CatalogData?, onResult: (String?) -> Unit) {
+        val known = RoleManager.effectiveSoc()
+        if (known.isNotEmpty()) {
+            runOnUiThread { onResult(known) }
+            return
+        }
+        val socList = if (catalog != null && catalog.devices.isNotEmpty())
+            catalog.devices.keys.sorted()
+        else
+            listOf("sm8475", "sm8450", "sm8550", "sm8650", "sm8750", "sm8850")
+        val items = socList.toTypedArray()
+        runOnUiThread {
+            AlertDialog.Builder(this)
+                .setTitle("无法识别到您的 SoC")
+                .setMessage("请手动选择您的手机 SoC；如果列表里没有，说明软件暂不支持您的设备。")
+                .setItems(items) { _, which ->
+                    val soc = items[which]
+                    prefs.edit().putString("soc_override", soc).apply()
+                    RoleManager.setManualSoc(soc)
+                    onResult(soc)
+                }
+                .setNegativeButton("取消", { _, _ -> onResult(null) })
+                .show()
+        }
     }
 
 
@@ -908,37 +927,52 @@ class MainActivity : Activity() {
                 log("在线目录不可达")
                 return@Thread
             }
-            val soc = RoleManager.detectSoc()
-            val shared = Catalog.compatibleShared(catalog, soc)
-            val roles = Catalog.compatibleRoles(catalog, soc)
-            runOnUiThread {
-                setupProgress.visibility = View.GONE
-                val items = mutableListOf<String>()
-                val actions = mutableListOf<() -> Unit>()
-                if (shared == null) {
-                    items.add("共享件:未找到本机($soc)可用包")
-                    actions.add {}
-                } else {
-                    val ready = RoleManager.isSharedReady(filesDir)
-                    items.add(if (ready) "共享件:${shared.name} [已就绪]" else "共享件:${shared.name} [可下载]")
-                    actions.add { if (!ready) downloadSharedFromCatalog(shared) }
-                }
-                if (roles.isEmpty()) {
-                    items.add("角色:暂无授权角色")
-                    actions.add {}
-                } else {
-                    for ((role, file) in roles) {
-                        items.add("角色:${role.name} (${file.size / 1048576}MB)")
-                        actions.add { downloadRoleFromCatalog(role, file) }
+            val soc = RoleManager.effectiveSoc()
+            if (soc.isNotEmpty()) {
+                showOnlineLibrary(catalog, soc)
+            } else {
+                resolveSoc(catalog) { s ->
+                    if (s == null) {
+                        setupProgress.visibility = View.GONE
+                        setupStatus.text = "未选择 SoC"
+                    } else {
+                        showOnlineLibrary(catalog, s)
                     }
                 }
-                AlertDialog.Builder(this)
-                    .setTitle("在线角色库")
-                    .setItems(items.toTypedArray()) { _, which -> actions[which].invoke() }
-                    .setNegativeButton("关闭", null)
-                    .show()
             }
         }.start()
+    }
+
+    private fun showOnlineLibrary(catalog: Catalog.CatalogData, soc: String) {
+        val shared = Catalog.compatibleShared(catalog, soc)
+        val roles = Catalog.compatibleRoles(catalog, soc)
+        runOnUiThread {
+            setupProgress.visibility = View.GONE
+            val items = mutableListOf<String>()
+            val actions = mutableListOf<() -> Unit>()
+            if (shared == null) {
+                items.add("共享件:未找到本机($soc)可用包")
+                actions.add {}
+            } else {
+                val ready = RoleManager.isSharedReady(filesDir)
+                items.add(if (ready) "共享件:${shared.name} [已就绪]" else "共享件:${shared.name} [可下载]")
+                actions.add { if (!ready) downloadSharedFromCatalog(shared) }
+            }
+            if (roles.isEmpty()) {
+                items.add("角色:暂无授权角色")
+                actions.add {}
+            } else {
+                for ((role, file) in roles) {
+                    items.add("角色:${role.name} (${file.size / 1048576}MB)")
+                    actions.add { downloadRoleFromCatalog(role, file) }
+                }
+            }
+            AlertDialog.Builder(this)
+                .setTitle("在线角色库")
+                .setItems(items.toTypedArray()) { _, which -> actions[which].invoke() }
+                .setNegativeButton("关闭", null)
+                .show()
+        }
     }
 
     private fun downloadSharedFromCatalog(entry: Catalog.SharedEntry) {

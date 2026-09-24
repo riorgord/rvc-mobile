@@ -4,10 +4,7 @@
   "devices": {
     "sm8475": { "soc_id": 42, "v": "V69" },
     "sm8450": { "soc_id": 36, "v": "V69" },
-    "sm7475": { "soc_id": 54, "v": "V69" },
     "sm8550": { "soc_id": 43, "v": "V73" },
-    "sm8635": { "soc_id": 68, "v": "V73" },
-    "sm7675": { "soc_id": 70, "v": "V73" },
     "sm8650": { "soc_id": 57, "v": "V75" },
     "sm8750": { "soc_id": 69, "v": "V79" },
     "sm8850": { "soc_id": 87, "v": "V81" }
@@ -17,12 +14,78 @@
       "id": "shared-v69-42",
       "name": "共享件 V69/42 (8+ Gen 1)",
       "soc": "sm8475",
+      "version": 1,
       "file": "shared-v69-42.zip",
-      "sha256": "4b4fcab2828d60f0e8a7c80c5e55739a9c685486e75802e9ea93a23404afaf1c",
-      "size": 427841863,
+      "sha256": "ad4136abc9dc5631b4fdd3bfe46d70048f69a0d132d93c8696275e8dba49b667",
+      "size": 427813139,
       "mirrors": {
         "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-42.zip",
         "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-42.zip"
+      }
+    },
+    {
+      "id": "shared-v69-36",
+      "name": "共享件 V69/36 (8 Gen 1)",
+      "soc": "sm8450",
+      "version": 1,
+      "file": "shared-v69-36.zip",
+      "sha256": "c0f024d88eeb9909393d0c60e02f908a382955ae4b017810504f234f78336b62",
+      "size": 427858195,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-36.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-36.zip"
+      }
+    },
+    {
+      "id": "shared-v73-43",
+      "name": "共享件 V73/43 (8 Gen 2)",
+      "soc": "sm8550",
+      "version": 1,
+      "file": "shared-v73-43.zip",
+      "sha256": "5b44ba3efc23087623478e0b106d8ff48b021cf19e9f747bc39a299888c1ad94",
+      "size": 430258451,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v73-43.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v73-43.zip"
+      }
+    },
+    {
+      "id": "shared-v75-57",
+      "name": "共享件 V75/57 (8 Gen 3)",
+      "soc": "sm8650",
+      "version": 1,
+      "file": "shared-v75-57.zip",
+      "sha256": "c91efd5b50ccc2d263abfd8a2fbd7e35d9ff045bb7dc8ff7422b4bf4b852b5b3",
+      "size": 430258451,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v75-57.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v75-57.zip"
+      }
+    },
+    {
+      "id": "shared-v79-69",
+      "name": "共享件 V79/69 (8 Elite)",
+      "soc": "sm8750",
+      "version": 1,
+      "file": "shared-v79-69.zip",
+      "sha256": "d712c7a1b152787307cb25f919d2f4d92e1abbe66de663c7af77a947ed0e4e1f",
+      "size": 430258451,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v79-69.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v79-69.zip"
+      }
+    },
+    {
+      "id": "shared-v81-87",
+      "name": "共享件 V81/87 (8e5)",
+      "soc": "sm8850",
+      "version": 1,
+      "file": "shared-v81-87.zip",
+      "sha256": "37475ce25b57bf4bfbd5646f8fa6dbe3fdeab4ae391f5c5199393502139da9b8",
+      "size": 430553363,
+      "mirrors": {
+        "huggingface": "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v81-87.zip",
+        "modelscope": "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v81-87.zip"
       }
     }
   ],

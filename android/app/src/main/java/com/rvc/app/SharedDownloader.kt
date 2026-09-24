@@ -12,20 +12,16 @@ import java.net.URL
  * 策略:并行探测抱脸/魔塔两个源的连通性与延迟,选可达且延迟低的下载;
  * 都不可达/未配置时返回 null,由 UI 引导 SAF 手动导入。
  *
- * 直链(2026-09-21 已验证):shared-v69-42.zip 对应 SM8475 / V69 / soc42。
- * 以后每类设备一份,按设备名区分文件。
+ * 注意:具体下载哪个包不再写死——由 Catalog 按本机 SoC 匹配出 shared 条目,
+ * 把该条目的 mirrors 传给 probeAndPick 选源(见 MainActivity.downloadSharedFromCatalog)。
  */
 object SharedDownloader {
     private const val TAG = "SharedDownloader"
     private const val CONNECT_TIMEOUT_MS = 5000
     private const val READ_TIMEOUT_MS = 30000
 
-    private val SHARED_URLS = listOf(
-        Triple("huggingface",
-            "https://huggingface.co/riorgord/rvc-mobile-share/resolve/main/shared-v69-42.zip", true),
-        Triple("modelscope",
-            "https://www.modelscope.cn/models/rirogord/rvc-mobile-share/resolve/master/shared-v69-42.zip", true)
-    )
+    // 已废弃:多 SoC 后按 catalog 匹配,不再内置任何直链。
+    private val SHARED_URLS = emptyList<Triple<String, String, Boolean>>()
 
     data class Source(val name: String, val url: String)
 

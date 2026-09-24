@@ -6,7 +6,8 @@
 
 用法:
   python build_shared.py --assets <rvc_app/model-builder/shared_src> \
-      --out <输出目录> [--zip out/shared-v69-42.zip]
+      --out <输出目录> [--zip out/shared-v69-42.zip] \
+      [--arch sm8475] [--version 1]
   python build_shared.py --verify shared.zip          # 校验一个已有 shared.zip
 
 manifest.json:
@@ -59,7 +60,7 @@ def sha256_file(path, chunk=1 << 20):
     return h.hexdigest()
 
 
-def build(assets, out_dir, zip_path):
+def build(assets, out_dir, zip_path, arch=ARCH, version=VERSION):
     os.makedirs(out_dir, exist_ok=True)
     missing = [rel for rel in SHARED_FILES if not os.path.isfile(os.path.join(assets, *rel.split("/")))]
     if missing:
@@ -98,12 +99,12 @@ def build(assets, out_dir, zip_path):
                 outs.write(b)
         print("  [license] %s (%d)" % (rel, os.path.getsize(dst)))
 
-    manifest = {"type": "shared", "arch": ARCH, "sdk_version": SDK_VERSION,
-                "version": VERSION, "files": files}
+    manifest = {"type": "shared", "arch": arch, "sdk_version": SDK_VERSION,
+                "version": version, "files": files}
     mpath = os.path.join(out_dir, "manifest.json")
     with open(mpath, "w", encoding="utf-8") as fp:
         json.dump(manifest, fp, ensure_ascii=False, indent=2)
-    print("manifest.json: %d 个文件" % len(files))
+    print("manifest.json: %d 个文件, arch=%s, version=%s" % (len(files), arch, version))
 
     if zip_path:
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
@@ -154,6 +155,8 @@ def main():
     ap.add_argument("--assets", default="")
     ap.add_argument("--out", default="")
     ap.add_argument("--zip", default="")
+    ap.add_argument("--arch", default=ARCH)
+    ap.add_argument("--version", type=int, default=VERSION)
     ap.add_argument("--verify", default="")
     a = ap.parse_args()
 
@@ -163,7 +166,7 @@ def main():
     if not a.assets or not a.out:
         ap.error("需要 --assets 和 --out(或 --verify)")
     zip_path = a.zip or os.path.join(a.out, "shared.zip")
-    build(a.assets, a.out, zip_path)
+    build(a.assets, a.out, zip_path, a.arch, a.version)
 
 
 if __name__ == "__main__":

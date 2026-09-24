@@ -25,8 +25,19 @@ object RoleManager {
     private const val TAG = "RoleManager"
     const val PREF_ROLE = "current_role_id"
 
+    /** 用户手动选择的 SoC(识别失败时弹窗选择后写入)。优先于自动探测。 */
+    @Volatile var socOverride: String? = null
+
     /** 本机期望的 HTP 架构(如 sm8475 = V69)。QNN 编译产物绑死架构,对不上不能用。 */
-    val EXPECTED_ARCH: String get() = detectSoc().ifEmpty { "sm8475" }
+    val EXPECTED_ARCH: String get() = socOverride ?: detectSoc()
+
+    /** 手动选择优先,否则探测本机 SoC(小写);探测不到返回空串。 */
+    fun effectiveSoc(): String = socOverride ?: detectSoc()
+
+    /** 设置/清除手动 SoC 选择。 */
+    fun setManualSoc(soc: String?) {
+        socOverride = soc?.lowercase()?.ifBlank { null }
+    }
 
     /** 探测本机 SoC 型号(小写)。优先 ro.soc.model,回退 ro.board.platform。 */
     fun detectSoc(): String {
@@ -41,7 +52,7 @@ object RoleManager {
                 s2
             }
         } catch (t: Throwable) {
-            "sm8475"
+            ""
         }
     }
 

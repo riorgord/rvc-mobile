@@ -1078,7 +1078,8 @@ def init_f0(native_lib_dir, files_dir, uid, f0_method, profile=False):
     if f0_method == "fcpe":
         gsv.init(os.path.join(files_dir, "models", "fcpe_256.bin"), "fcpe_256")
     else:
-        gsv.init(os.path.join(files_dir, "models", "rmvpe_fp32_256.bin"), "rmvpe_fp32_256")
+        # rmvpe 只用 64 帧短窗版(rmvpe_fp32_64),256 帧版不编不传
+        gsv.init(os.path.join(files_dir, "models", "rmvpe_fp32_64.bin.bin"), "rmvpe_fp32_64")
     return "ok"
 
 
