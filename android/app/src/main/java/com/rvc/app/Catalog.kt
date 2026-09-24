@@ -48,6 +48,7 @@ object Catalog {
 
     data class CatalogData(
         val schema: Int,
+        val appMinVersion: String,
         val devices: Map<String, Device>,
         val shared: List<SharedEntry>,
         val roles: List<RoleEntry>
@@ -152,7 +153,8 @@ object Catalog {
                 ))
             }
 
-            CatalogData(root.optInt("schema"), devices, shared, roles)
+            CatalogData(root.optInt("schema"), root.optString("app_min_version", "0.0.0"),
+                devices, shared, roles)
         } catch (e: Exception) {
             Log.w(TAG, "parse failed: $e")
             null

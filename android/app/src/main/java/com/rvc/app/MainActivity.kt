@@ -365,15 +365,30 @@ class MainActivity : Activity() {
         // (rmvpe 自动全链路验证改由"全链路"按钮手动触发)
         refreshRoles()
         refreshSharedStatus()
+        val installedVer = RoleManager.installedSharedVersion(filesDir)
         if (RoleManager.isSharedReady(filesDir)) {
-            log("预载 fcpe 管线…")
-            preloadDefault()
+            if (installedVer in 1 until RoleManager.MIN_MODEL_VERSION) {
+                log("模型包版本过旧(v$installedVer < v${RoleManager.MIN_MODEL_VERSION}),跳过预载")
+                promptOldModelVersion()
+            } else {
+                log("预载 fcpe 管线…")
+                preloadDefault()
+            }
         } else {
             log("共享件缺失:请先 下载共享件 或 SAF 导入 shared.zip")
         }
         // SoC 探测失败且未手动选择 → 启动即弹窗让用户手动选(列表没有=不支持)
         if (RoleManager.effectiveSoc().isEmpty()) {
             resolveSoc(null) { _ -> }
+        }
+        // 启动静默检查模型更新(一天最多一次)
+        thread {
+            val last = prefs.getLong("last_model_check_ts", 0)
+            if (System.currentTimeMillis() - last < 24 * 3600 * 1000L) return@thread
+            val c = Catalog.fetch() ?: return@thread
+            val soc = RoleManager.effectiveSoc()
+            if (soc.isEmpty()) return@thread
+            checkModelVersion(c, soc, fromUser = false)
         }
     }
 
@@ -393,6 +408,82 @@ class MainActivity : Activity() {
                 preloadDone = true
             }
         }.start()
+    }
+
+    private fun appVersionName(): String = try {
+        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
+    } catch (e: Exception) {
+        "0.0.0"
+    }
+
+    /** 版本号 "a.b.c" 数值比较: a>b → 1, a<b → -1, 相等 → 0。 */
+    private fun compareVersion(a: String, b: String): Int {
+        val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
+        val pb = b.split(".").map { it.toIntOrNull() ?: 0 }
+        for (i in 0 until maxOf(pa.size, pb.size)) {
+            val x = pa.getOrElse(i) { 0 }
+            val y = pb.getOrElse(i) { 0 }
+            if (x != y) return if (x > y) 1 else -1
+        }
+        return 0
+    }
+
+    /** 模型版本检查(需在后台线程调用,弹窗回主线程):
+     * App 版本门槛 → 最低模型版本门槛 → 在线更新检测。 */
+    private fun checkModelVersion(catalog: Catalog.CatalogData, soc: String, fromUser: Boolean) {
+        val shared = Catalog.compatibleShared(catalog, soc) ?: return
+        val localVer = RoleManager.installedSharedVersion(filesDir)
+        val curApp = appVersionName()
+        if (compareVersion(curApp, catalog.appMinVersion) < 0) {
+            runOnUiThread {
+                AlertDialog.Builder(this)
+                    .setTitle("App 版本过低")
+                    .setMessage("当前 $curApp < 需要的 ${catalog.appMinVersion}\n请先升级 App 再使用在线功能。")
+                    .setPositiveButton("知道了", null)
+                    .show()
+            }
+            return
+        }
+        if (localVer in 1 until RoleManager.MIN_MODEL_VERSION) {
+            runOnUiThread { promptOldModelVersion() }
+            return
+        }
+        // 共享件已就绪但还没版本记录(旧版装的):不自动弹更新,手动检查时提示重新导入一次
+        if (localVer == 0 && RoleManager.isSharedReady(filesDir)) {
+            if (fromUser) {
+                runOnUiThread {
+                    Toast.makeText(this, "已检测到共享件但缺少版本记录\n请重新下载/导入一次 shared.zip", Toast.LENGTH_LONG).show()
+                }
+            }
+            return
+        }
+        if (shared.version > localVer) {
+            runOnUiThread {
+                AlertDialog.Builder(this)
+                    .setTitle("发现新模型包")
+                    .setMessage("当前已装 v$localVer,在线有 v${shared.version}\n是否现在更新?")
+                    .setPositiveButton("更新") { _, _ -> downloadSharedFromCatalog(shared) }
+                    .setNegativeButton("稍后", null)
+                    .show()
+            }
+        } else if (fromUser) {
+            runOnUiThread {
+                Toast.makeText(this, "模型包已是最新 v$localVer", Toast.LENGTH_SHORT).show()
+            }
+        }
+        if (!fromUser) {
+            prefs.edit().putLong("last_model_check_ts", System.currentTimeMillis()).apply()
+        }
+    }
+
+    /** 已装模型包低于 App 最低版本要求时的阻断提示。 */
+    private fun promptOldModelVersion() {
+        AlertDialog.Builder(this)
+            .setTitle("模型包版本过旧")
+            .setMessage("当前模型包 v${RoleManager.installedSharedVersion(filesDir)} < 需要的 v${RoleManager.MIN_MODEL_VERSION}\n需更新后才能使用。")
+            .setPositiveButton("去更新") { _, _ -> downloadShared() }
+            .setNegativeButton("知道了", null)
+            .show()
     }
 
     /** 切换 F0 提取器:未加载则现场加载(进度条显示,成功才标记,失败可重试)。
@@ -954,6 +1045,10 @@ class MainActivity : Activity() {
                 val ready = RoleManager.isSharedReady(filesDir)
                 items.add(if (ready) "共享件:${shared.name} [已就绪]" else "共享件:${shared.name} [可下载]")
                 actions.add { if (!ready) downloadSharedFromCatalog(shared) }
+                val localVer = RoleManager.installedSharedVersion(filesDir)
+                val localLabel = if (localVer == 0 && RoleManager.isSharedReady(filesDir)) "?" else "v$localVer"
+                items.add("模型更新: 已装 $localLabel / 在线 v${shared.version}")
+                actions.add { checkModelVersion(catalog, soc, true) }
             }
             if (roles.isEmpty()) {
                 items.add("角色:暂无授权角色")
@@ -973,6 +1068,13 @@ class MainActivity : Activity() {
     }
 
     private fun downloadSharedFromCatalog(entry: Catalog.SharedEntry) {
+        if (entry.version < RoleManager.MIN_MODEL_VERSION) {
+            runOnUiThread {
+                setupStatus.text = "该共享件版本过低(v${entry.version} < v${RoleManager.MIN_MODEL_VERSION}),请升级 App"
+            }
+            log("共享件版本过低: v${entry.version} < v${RoleManager.MIN_MODEL_VERSION}")
+            return
+        }
         setupProgress.visibility = View.VISIBLE
         setupProgress.progress = 0
         setupStatus.text = "探测共享件源…"

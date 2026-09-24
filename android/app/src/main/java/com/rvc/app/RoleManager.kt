@@ -69,6 +69,24 @@ object RoleManager {
         "periphery/proj.bin"
     )
 
+    /** 当前 App 能接受的最低共享件版本(manifest.version)。低于它禁止预载/推理。 */
+    const val MIN_MODEL_VERSION = 1
+
+    /** 已装共享件的 manifest 存档名(解压时从 shared.zip 里单独存出来)。 */
+    const val SHARED_MANIFEST = "shared_manifest.json"
+
+    /** 读取已装共享件版本;没装/读不到返回 0。 */
+    fun installedSharedVersion(filesDir: File): Int {
+        val f = File(filesDir, SHARED_MANIFEST)
+        if (!f.isFile) return 0
+        return try {
+            JSONObject(f.readText()).optInt("version", 0)
+        } catch (e: Exception) {
+            Log.w(TAG, "bad shared manifest", e)
+            0
+        }
+    }
+
     fun rolesDir(filesDir: File): File = File(filesDir, "roles").apply { mkdirs() }
 
     fun scanRoles(filesDir: File): List<RoleInfo> {
@@ -174,6 +192,8 @@ object RoleManager {
             }
         }
         verifyFiles(filesDir, expected)
+        // 共享件版本存档:供模型更新检测/最低版本门槛读取
+        File(filesDir, SHARED_MANIFEST).writeText(manifest.toString())
     }
 
     private fun extractVerified(zip: File, dest: File, manifest: JSONObject) {
