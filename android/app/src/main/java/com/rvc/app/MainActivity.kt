@@ -936,6 +936,19 @@ class MainActivity : Activity() {
     }
 
     private fun downloadShared() {
+        if (RoleManager.isSharedReady(filesDir)) {
+            val localVer = RoleManager.installedSharedVersion(filesDir)
+            if (localVer >= RoleManager.MIN_MODEL_VERSION) {
+                setupStatus.text = "共享件已就绪(v$localVer),无需下载"
+                log("共享件已就绪(v$localVer),跳过下载")
+                return
+            }
+            if (localVer == 0) {
+                setupStatus.text = "共享件已就绪但缺版本记录;如需记录版本请到 在线角色库-模型更新 重新下载"
+                log("共享件已就绪但缺版本记录,跳过下载")
+                return
+            }
+        }
         setupProgress.visibility = View.VISIBLE
         setupProgress.progress = 0
         setupStatus.text = "拉取目录并确认 SoC…"
@@ -1073,6 +1086,12 @@ class MainActivity : Activity() {
                 setupStatus.text = "该共享件版本过低(v${entry.version} < v${RoleManager.MIN_MODEL_VERSION}),请升级 App"
             }
             log("共享件版本过低: v${entry.version} < v${RoleManager.MIN_MODEL_VERSION}")
+            return
+        }
+        if (RoleManager.isSharedReady(filesDir) &&
+            RoleManager.installedSharedVersion(filesDir) >= entry.version) {
+            setupStatus.text = "已是最新(v${entry.version}),无需下载"
+            log("共享件已是最新(v${entry.version}),跳过下载")
             return
         }
         setupProgress.visibility = View.VISIBLE
