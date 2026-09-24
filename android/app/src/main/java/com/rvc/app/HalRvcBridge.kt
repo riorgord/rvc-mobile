@@ -75,6 +75,8 @@ object HalRvcBridge {
     // 代际计数:每次重置 +1;处理器拿块时记下代际,推理完发现代际变了就丢弃该块输出,
     // 防止"上一段在飞的那一块"在重置后还写进环
     @Volatile private var generation = 0
+    // 诊断:stream_push 返回空输出的次数(初始化/积压不足时常见)
+    private var emptyOutCount = 0
 
     private val inBlocks = LinkedBlockingQueue<ByteArray>()
 
@@ -173,6 +175,7 @@ object HalRvcBridge {
                         // HAL 新一段录音开始的重置标记:清掉上一段积压,启动动态静音填充
                         // 注意:这里不再调 stream_clear——清空 RVC 状态会导致冷启动漏原声
                         streamSr = sr; streamCh = ch; streamFmt = fmt
+                        Log.i(TAG, "reset marker sr=$sr ch=$ch fmt=$fmt -> reset+filler")
                         resetStreamState()
                         startSilenceFiller()
                         continue
@@ -211,6 +214,7 @@ object HalRvcBridge {
     private fun startSilenceFiller() {
         if (fillerRunning) return
         fillerRunning = true
+        Log.i(TAG, "silence filler start (stream $streamSr/$streamCh/$streamFmt)")
         fillerThread = Thread({
             try {
                 while (running && fillerRunning && !realOutputReady) {
@@ -293,7 +297,13 @@ object HalRvcBridge {
                     Log.e(TAG, "stream_push fail: ${t.message}", t)
                     continue
                 }
-                if (outBytes.isEmpty()) continue
+                if (outBytes.isEmpty()) {
+                    emptyOutCount++
+                    if (emptyOutCount <= 50 || emptyOutCount % 50 == 0) {
+                        Log.i(TAG, "stream_push empty #$emptyOutCount (gen=$gen inQueue=${inBlocks.size})")
+                    }
+                    continue
+                }
                 // 推理期间发生了重置(新一段开始):这块是上一段的,丢弃,不写环、不触发停静音
                 if (generation != gen) {
                     Log.i(TAG, "discard stale block (gen $gen -> ${generation})")
@@ -305,8 +315,12 @@ object HalRvcBridge {
                 if (out.isNotEmpty()) {
                     try {
                         synchronized(writeLock) {
-                            // 第一块真实变声写出去后,静音填充立即停
-                            realOutputReady = true
+                            if (!realOutputReady) {
+                                realOutputReady = true
+                                Log.i(TAG, "first real output written (gen=$gen bytes=${out.size})")
+                            } else {
+                                realOutputReady = true
+                            }
                             s.outputStream.write(out)
                             s.outputStream.flush()
                         }
@@ -349,6 +363,7 @@ object HalRvcBridge {
     }
 
     private fun ensurePyStream(ctx: Context) {
+        Log.i(TAG, "ensurePyStream: stream_create start (key=$rvcKey role=${rvcRoleDir ?: "files_dir"})")
         val mod = Python.getInstance().getModule("rvc_api")
         mod.callAttr(
             "stream_create",
@@ -363,7 +378,7 @@ object HalRvcBridge {
         // 预热 6 块静音,让 rmvpe/hubert/z/dec 首次 init + 索引加载完成
         val warm = ByteArray(BLOCK_48K * 6 * 4)
         mod.callAttr("stream_push", warm)
-        Log.i(TAG, "RVC stream ready")
+        Log.i(TAG, "ensurePyStream: stream_create + warmup done -> RVC stream ready")
     }
 
     /* ---------------- PCM 转换/重采样 ---------------- */
