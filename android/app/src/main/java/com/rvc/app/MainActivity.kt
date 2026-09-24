@@ -741,9 +741,10 @@ class MainActivity : Activity() {
                 val ms = Python.getInstance().getModule("rvc_api")
                     .callAttr("stream_measure_latency", 4).toDouble()
                 val s = "%.0f".format(ms)
+                val thermal = readThermalSummary()
                 prefs.edit().putString("latency_measured_ms", s).apply()
-                runOnUiThread { latencyView.text = "实测延迟: $s ms" }
-                log("实测延迟 = $s ms (块时长预算 370ms, 实时需 <=370)")
+                runOnUiThread { latencyView.text = "实测延迟: $s ms\n$thermal" }
+                log("实测延迟 = $s ms (块时长预算 370ms, 实时需 <=370) | $thermal")
             } catch (e: Throwable) {
                 log("测延迟失败: " + e)
             }
@@ -813,6 +814,39 @@ class MainActivity : Activity() {
         } catch (t: Throwable) {
             -1 to ""
         }
+    }
+
+    /** 读取 CPU/DSP/GPU/电池温度,用于测延迟时判断是否热降频。
+     * 温度值默认毫摄氏度,统一除以 1000。 */
+    private fun readThermalSummary(): String {
+        val cmd = "for z in /sys/class/thermal/thermal_zone*; do " +
+            "t=\$(cat \$z/temp 2>/dev/null); n=\$(cat \$z/type 2>/dev/null); " +
+            "echo \"\$n:\$t\"; done"
+        val (rc, out) = runSu(cmd)
+        if (rc != 0 || out.isBlank()) return "温度读取失败"
+        var cpu = -1.0
+        var nsp = -1.0
+        var gpu = -1.0
+        var bat = -1.0
+        for (line in out.lineSequence()) {
+            val idx = line.indexOf(':')
+            if (idx <= 0) continue
+            val name = line.substring(0, idx).trim()
+            val v = line.substring(idx + 1).trim().toDoubleOrNull() ?: continue
+            val c = v / 1000.0
+            when {
+                name.startsWith("cpu") -> if (c > cpu) cpu = c
+                name.startsWith("nsp") -> if (c > nsp) nsp = c
+                name.startsWith("gpu") -> if (c > gpu) gpu = c
+                name == "battery" -> bat = c
+            }
+        }
+        val sb = StringBuilder()
+        if (cpu >= 0) sb.append("CPU=").append("%.1f".format(cpu)).append("°C ")
+        if (nsp >= 0) sb.append("DSP=").append("%.1f".format(nsp)).append("°C ")
+        if (gpu >= 0) sb.append("GPU=").append("%.1f".format(gpu)).append("°C ")
+        if (bat >= 0) sb.append("电池=").append("%.1f".format(bat)).append("°C")
+        return sb.toString().trim().ifBlank { "温度读取失败" }
     }
 
     private fun hasRoot(): Boolean {
