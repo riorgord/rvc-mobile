@@ -373,7 +373,8 @@ object HalRvcBridge {
             false,          // profile
             rvcKey, rvcRms, rvcIdx, rvcProt,
             64, 12,         // f0_win, future
-            rvcRoleDir      // role_dir(角色包根目录;null=files_dir 全量)
+            rvcRoleDir,     // role_dir(角色包根目录;null=files_dir 全量)
+            RoleManager.effectiveSoc()
         )
         // 预热 6 块静音,让 rmvpe/hubert/z/dec 首次 init + 索引加载完成
         val warm = ByteArray(BLOCK_48K * 6 * 4)

@@ -19,14 +19,15 @@ for _l in ("liblog.so", "/system/lib64/liblog.so", "/vendor/lib64/liblog.so"):
         break
     except Exception:
         _lblog = None
-_LOG_PATH = "/data/local/tmp/route2/rvc_prof.log"
+_LOG_PATH = None  # 由 RVCStream.__init__ 设为 App 私有目录(卸载随清),不再写 /data/local/tmp
 
 def _logcat(msg):
     try:
         if _lblog is not None:
             _lblog.__android_log_print(4, b"RVC_PY", ("[rvc] " + str(msg)).encode())
-        with open(_LOG_PATH, "a") as _f:
-            _f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
+        if _LOG_PATH:
+            with open(_LOG_PATH, "a") as _f:
+                _f.write(time.strftime("%H:%M:%S ") + str(msg) + "\n")
     except Exception:
         pass
 
@@ -61,6 +62,8 @@ class RVCStream:
         import rvc_api
         self._api = rvc_api
         self.p = files_dir
+        global _LOG_PATH
+        _LOG_PATH = os.path.join(self.p, "rvc_prof.log")  # App 私有目录,卸载随清
         self.gsv = rvc_api.init(native_lib_dir, files_dir, uid, profile, role_dir=role_dir)
         # 输入侧降噪(DF3 onnxruntime: 48k 直进 → 16k 输出, 块级流式 +20ms lookahead)
         self._den = DF3Denoiser(native_lib_dir, files_dir) if denoise else None

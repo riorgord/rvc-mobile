@@ -25,6 +25,9 @@
         android:requestLegacyExternalStorage="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
+        <!-- QNN FastRPC: expose system libcdsprpc.so to app namespace (Android 12+) -->
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

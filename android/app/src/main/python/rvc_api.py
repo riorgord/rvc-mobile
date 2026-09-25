@@ -39,8 +39,10 @@ def _loc(base, rel):
 
 def _preload(lib_dir):
     """bionic 启动时缓存搜索路径,setenv LD_LIBRARY_PATH 对已缓存路径无效
-    → 必须按 soname 主动 dlopen(GSV 验证)。2.47 无 CalculatorStub,用 V69Stub。"""
-    order = ["libqti_dsp.so", "libvmmem.so", "libcdsprpc.so", "libhidlbase.so",
+    → 必须按 soname 主动 dlopen(GSV 验证)。2.47 无 CalculatorStub,用 V69Stub。
+    libqti_dsp/libvmmem/libcdsprpc 不再手动加载:系统 libcdsprpc 由 AndroidManifest
+    <uses-native-library> 暴露,这里跳过。"""
+    order = ["libhidlbase.so",
              "libhidltransport.so", "libhwbinder.so", "libhardware.so",
              "libutils.so", "liblog.so", "libcutils.so", "libdmabufheap.so",
              "libbase.so", "libc++.so", "libc++_shared.so",
@@ -60,11 +62,14 @@ def _preload(lib_dir):
                 pass
 
 
-def init(native_lib_dir, files_dir, uid, profile=False, role_dir=None):
+def init(native_lib_dir, files_dir, uid, profile=False, role_dir=None, dsp_soc=None):
     """幂等初始化:env(三件套) + 预加载 + libgsv_qnn.so 绑定。
     role_dir: 当前角色包解压根目录;None 表示旧行为(全从 files_dir 读)。
+    dsp_soc: 本机 SoC(如 sm8750),libgsv 据此选 V79 Stub;None 沿用已有 env/默认 V69。
     profile=True → QnnProfile 采集,结果可 profile_dump 到 /sdcard/rvc_exp。
     注意:GSV_NOPROFILE 由 libgsv_qnn.so 加载时缓存 → 切换 profiling 需重启 App 生效。"""
+    if dsp_soc:
+        os.environ["GSV_DSP_SOC"] = dsp_soc
     if role_dir:
         set_role_dir(role_dir)
     if _STATE.get("gsv") is not None:
@@ -1054,11 +1059,11 @@ def process_stream_v2_ref(native_lib_dir, files_dir, uid, profile=False,
                              f0_up_key, rms_mix_rate, index_rate, protect, f0_method)
 
 
-def preload_default(native_lib_dir, files_dir, uid, profile=False):
+def preload_default(native_lib_dir, files_dir, uid, profile=False, dsp_soc=None):
     """启动预载默认管线:hubert + fcpe 常驻内存(实时零加载开销)。
     gen_fp32 是旧单模型路径,实时链路已改 z_producer+dec_short,不再预载;
     rmvpe 不预载,由 RVCStream 现场加载(rmvpe_fp32_64)。"""
-    gsv = init(native_lib_dir, files_dir, uid, profile)
+    gsv = init(native_lib_dir, files_dir, uid, profile, dsp_soc=dsp_soc)
     for bin_name, gname in [("hubert_mix_def_t4800.bin", "hubert_mix_def_t4800"),
                             ("fcpe_256.bin", "fcpe_256")]:
         gsv.init(os.path.join(files_dir, "models", bin_name), gname)
@@ -1076,9 +1081,9 @@ def preload_default(native_lib_dir, files_dir, uid, profile=False):
     return "ok"
 
 
-def init_f0(native_lib_dir, files_dir, uid, f0_method, profile=False):
+def init_f0(native_lib_dir, files_dir, uid, f0_method, profile=False, dsp_soc=None):
     """F0 提取器现场加载(gsv 同名缓存命中则直接激活,不重载)。"""
-    gsv = init(native_lib_dir, files_dir, uid, profile)
+    gsv = init(native_lib_dir, files_dir, uid, profile, dsp_soc=dsp_soc)
     if f0_method == "fcpe":
         gsv.init(os.path.join(files_dir, "models", "fcpe_256.bin"), "fcpe_256")
     else:
@@ -1102,11 +1107,14 @@ _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
 
 def stream_create(native_lib_dir, files_dir, uid, profile=False,
                   f0_up_key=0, rms_mix_rate=0.75, index_rate=0.75, protect=0.33,
-                  f0_win=64, future=30, role_dir=None):
+                  f0_win=64, future=30, role_dir=None, dsp_soc=None):
     """创建/重建 RVCStream 全局单例(真流式状态机)。参数变化时重建。
     role_dir: 角色包解压根目录;None = 全从 files_dir 读(旧行为)。
+    dsp_soc: 本机 SoC(如 sm8750),libgsv 据此选 V79 Stub。
     角色切换:同名图槽(z_producer/dec_short_T61)先 remove,强制加载新 bin。"""
     global _STREAM, _DBG
+    if dsp_soc:
+        os.environ["GSV_DSP_SOC"] = dsp_soc
     _DBG = {"in_peak": 0.0, "in_clip": 0, "out_peak": 0.0, "out_clip": 0}
     # 角色变了:先释放旧角色占用且同名缓存的图,否则 gsv_init 同名不重载
     old_role = _STATE.get("loaded_role_dir")

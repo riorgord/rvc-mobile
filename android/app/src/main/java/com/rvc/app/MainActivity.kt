@@ -399,7 +399,7 @@ class MainActivity : Activity() {
                 ensurePy()
                 Python.getInstance().getModule("rvc_api")
                     .callAttr("preload_default", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid())
+                        android.os.Process.myUid(), false, RoleManager.effectiveSoc())
                 f0Loaded["fcpe"] = true
                 log("fcpe 管线预载完成")
             } catch (e: Throwable) {
@@ -499,7 +499,7 @@ class MainActivity : Activity() {
                 ensurePy()
                 Python.getInstance().getModule("rvc_api")
                     .callAttr("init_f0", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), m)
+                        android.os.Process.myUid(), m, false, RoleManager.effectiveSoc())
                 f0Loaded[m] = true
                 log("F0 %s 已就绪" .format(m))
             } catch (e: Throwable) {
@@ -737,7 +737,7 @@ class MainActivity : Activity() {
                 Python.getInstance().getModule("rvc_api").callAttr(
                     "stream_create", nativeLibDir(), filesDir.absolutePath,
                     android.os.Process.myUid(), profile, key, rms, 0.0f, prot, 64, 12,
-                    RoleManager.currentRoleDir(filesDir, prefs))
+                    RoleManager.currentRoleDir(filesDir, prefs), RoleManager.effectiveSoc())
                 val ms = Python.getInstance().getModule("rvc_api")
                     .callAttr("stream_measure_latency", 4).toDouble()
                 val s = "%.0f".format(ms)
