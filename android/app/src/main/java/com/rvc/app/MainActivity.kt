@@ -78,8 +78,8 @@ class MainActivity : Activity() {
         }
         profSwitch.isChecked = intent.getBooleanExtra("profile", false)
         val runBtn = Button(this).apply {
-            text = "跑 gen 自检"
-            setOnClickListener { runGen() }
+            text = "设备检测"
+            setOnClickListener { runDeviceCheck() }
         }
         val runAllBtn = Button(this).apply {
             text = "3模型全检"
@@ -512,20 +512,43 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun runGen() {
-        val profile = profSwitch.isChecked
-        log("跑 gen 自检 (profile=" + profile + ")…")
-        Thread {
-            try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), profile, "/sdcard/rvc_exp")
-                log("RESULT: " + out.toString())
-            } catch (e: Throwable) {
-                log("PY FAIL: " + e)
+    /** 设备兼容性检测(测试按钮)。弹窗展示完整判定结果与各检测项。 */
+    private fun runDeviceCheck() {
+        thread {
+            log("① 设备兼容性检测…")
+            val guard = DeviceGuard.evaluate()
+            log("检测结果: tier=${guard.tier} root=${guard.rootType} " +
+                "kernel_official=${guard.checks[1].pass} audio_primary=${guard.checks[2].pass} sdk=${guard.checks[3].detail}")
+            log("内核: ${guard.kernelVersion.take(120)}")
+            val detail = buildString {
+                append("判定档位: ")
+                append(when (guard.tier) {
+                    DeviceGuard.Tier.GREEN -> "🟢 GREEN(直接放行)"
+                    DeviceGuard.Tier.YELLOW -> "🟡 YELLOW(勾选确认后放行)"
+                    DeviceGuard.Tier.RED -> "🔴 RED(拦截安装)"
+                })
+                append("\n\n检测项:\n")
+                for (c in guard.checks) {
+                    append(if (c.pass) "✓ " else "✗ ")
+                    append(c.name).append(": ").append(c.detail).append("\n")
+                }
+                append("\n音频 HAL 判定: ").append(guard.halScheme).append("\n")
+                if (guard.redReasons.isNotEmpty()) {
+                    append("\n拦截原因:\n• ").append(guard.redReasons.joinToString("\n• ")).append("\n")
+                }
+                if (guard.yellowReasons.isNotEmpty()) {
+                    append("\n风险提示:\n• ").append(guard.yellowReasons.joinToString("\n• ")).append("\n")
+                }
+                append("\n内核版本: ").append(guard.kernelVersion.take(150))
             }
-        }.start()
+            handler.post {
+                AlertDialog.Builder(this)
+                    .setTitle("设备检测结果")
+                    .setMessage(detail)
+                    .setPositiveButton("关闭", null)
+                    .show()
+            }
+        }
     }
 
     private fun runAll() {
@@ -909,6 +932,106 @@ class MainActivity : Activity() {
 
     private fun installHalModule() {
         thread {
+            log("① 设备兼容性检测…")
+            val guard = DeviceGuard.evaluate()
+            log("检测结果: tier=${guard.tier} root=${guard.rootType} " +
+                "kernel_official=${guard.checks[1].pass} audio_primary=${guard.checks[2].pass} sdk=${guard.checks[3].detail}")
+            log("内核: ${guard.kernelVersion.take(120)}")
+            when (guard.tier) {
+                DeviceGuard.Tier.RED -> {
+                    log("✗ 设备不满足机架运行条件,已拦截安装")
+                    handler.post { showRedDialog(guard) }
+                    return@thread
+                }
+                DeviceGuard.Tier.YELLOW -> {
+                    log("⚠ 设备条件有风险,需用户确认后放行")
+                    handler.post { showYellowDialog(guard) }
+                    return@thread
+                }
+                DeviceGuard.Tier.GREEN -> {
+                    log("✓ 条件符合,直接安装")
+                    doInstallHalModule()
+                }
+            }
+        }
+    }
+
+    private fun showRebootDialog() {
+        AlertDialog.Builder(this)
+            .setTitle("HAL 模块已更新")
+            .setMessage("重启后新的 HAL 模块才会生效。现在重启吗?")
+            .setPositiveButton("立即重启") { _, _ ->
+                thread { runSu("reboot") }
+            }
+            .setNegativeButton("稍后", null)
+            .show()
+    }
+
+    /* ============ 机架设备拦截弹窗(保守策略,2026-09-26) ============
+     * RED   → 纯拦截:无继续按钮,只有退出。
+     * YELLOW→ 风险确认:3 秒后出现勾选框「我已阅读并理解上述风险」,
+     *          勾选后「继续安装」按钮才可点击。
+     * 已验证基线:K50U + legacy/HIDL + 官方内核 + Android 12 + Magisk。
+     */
+
+    private fun showRedDialog(guard: DeviceGuard.Result) {
+        val reasons = guard.redReasons.joinToString("\n• ", "• ") { it }
+        AlertDialog.Builder(this)
+            .setTitle("⚠ 设备不满足机架运行条件")
+            .setMessage(
+                "本机架目前仅验证于:\n" +
+                "K50U + Legacy/HIDL 音频 + 官方内核 + Android 12(MIUI13)+ Magisk\n\n" +
+                "检测到以下不兼容项:\n$reasons\n\n" +
+                "为避免无声/变声失败或系统异常,已禁止安装。"
+            )
+            .setPositiveButton("退出", null)
+            .setCancelable(false)
+            .show()
+    }
+
+    private fun showYellowDialog(guard: DeviceGuard.Result) {
+        val risks = guard.yellowReasons.joinToString("\n• ", "• ") { it }
+        // 勾选框 + 继续按钮都在自定义 view 里,AlertDialog 的按钮由代码动态启用
+        val cb = android.widget.CheckBox(this).apply {
+            text = "我已阅读并理解上述风险"
+            isEnabled = false   // 3 秒后才可勾选(防手快,强制阅读)
+        }
+        val tv = TextView(this).apply {
+            text = "检测到以下条件未完全符合已验证基线:\n$risks\n\n" +
+                "安装后可能出现:无声、变声失败、系统音频异常。\n" +
+                "3 秒后可勾选确认。"
+            setPadding(24, 8, 24, 8)
+        }
+        val ll = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(tv)
+            addView(cb)
+        }
+        val dlg = AlertDialog.Builder(this)
+            .setTitle("⚠ 设备条件与已验证基线不完全一致")
+            .setView(ll)
+            .setPositiveButton("继续安装", null) // 用 null,下面自己控点击
+            .setNegativeButton("取消", null)
+            .setCancelable(false)
+            .create()
+        dlg.show()
+        val continueBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
+        continueBtn.isEnabled = false
+        continueBtn.setOnClickListener {
+            dlg.dismiss()
+            doInstallHalModule()
+        }
+        // 3 秒后启用勾选框
+        handler.postDelayed({
+            if (dlg.isShowing) cb.isEnabled = true
+        }, 3000)
+        cb.setOnCheckedChangeListener { _, checked -> continueBtn.isEnabled = checked }
+    }
+
+    /** 拦截弹窗放行后的真正安装流程(后台线程)。 */
+    private fun doInstallHalModule() {
+        thread {
+            log("✓ 用户已确认风险,继续安装")
             log("① 检查 root…")
             if (!hasRoot()) {
                 log("✗ 未获得 root 授权:请先在 Magisk/KernelSU 中允许本应用")
@@ -957,17 +1080,6 @@ class MainActivity : Activity() {
             log("④ 安装/更新已提交,重启后生效")
             handler.post { showRebootDialog() }
         }
-    }
-
-    private fun showRebootDialog() {
-        AlertDialog.Builder(this)
-            .setTitle("HAL 模块已更新")
-            .setMessage("重启后新的 HAL 模块才会生效。现在重启吗?")
-            .setPositiveButton("立即重启") { _, _ ->
-                thread { runSu("reboot") }
-            }
-            .setNegativeButton("稍后", null)
-            .show()
     }
 
 
