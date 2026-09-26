@@ -805,15 +805,49 @@ class MainActivity : Activity() {
         }
     }
 
+    /* KernelSU 的 su 二进制在 /data/adb/ksu/bin/su,默认不在 App 的 PATH 里;
+     * Magisk 的 su 在 PATH 里。依次尝试,谁能启动就用谁。 */
     private fun runSu(cmd: String): Pair<Int, String> {
-        return try {
-            val p = ProcessBuilder("su", "-c", cmd).redirectErrorStream(true).start()
-            val out = p.inputStream.bufferedReader().readText()
-            val rc = p.waitFor()
-            rc to out
-        } catch (t: Throwable) {
-            -1 to ""
+        val candidates = listOf(
+            "su",
+            "/data/adb/ksu/bin/su",
+            "/system/bin/su",
+            "/system/xbin/su",
+            "/sbin/su"
+        )
+        for (su in candidates) {
+            try {
+                val p = ProcessBuilder(su, "-c", cmd).redirectErrorStream(true).start()
+                val out = p.inputStream.bufferedReader().readText()
+                val rc = p.waitFor()
+                return rc to out
+            } catch (t: Throwable) {
+                // 这个 su 不存在/不可执行,试下一个
+            }
         }
+        return -1 to ""
+    }
+
+    /* 音频 HAL 方案探测:
+     * AIDL   = 第3代,不加载 audio.primary.*.so,老 wrapper 无效(K80 这种)
+     * HIDL   = 第2代,仍会加载 audio.primary.*.so,wrapper 有效
+     * LEGACY = 第1代,直接加载 audio.primary.*.so,wrapper 有效
+     * UNKNOWN = 探测不到,保守按不支持处理
+     */
+    private fun detectHalScheme(): String {
+        val script = """
+            if service list 2>/dev/null | grep -q "android.hardware.audio.core.IModule"; then echo AIDL; exit 0; fi
+            if ls /vendor/lib64/android.hardware.audio.core-*-ndk.so /vendor/lib/android.hardware.audio.core-*-ndk.so 2>/dev/null | head -1 | grep -q .; then echo AIDL; exit 0; fi
+            if ls /vendor/bin/hw/audiohalservice* /vendor/bin/hw/android.hardware.audio.service 2>/dev/null | head -1 | grep -q .; then echo AIDL; exit 0; fi
+            if service list 2>/dev/null | grep -q "android.hardware.audio@"; then echo HIDL; exit 0; fi
+            if grep -l "audio.primary" /proc/[0-9]*/maps 2>/dev/null | head -1 | grep -q .; then echo LEGACY; exit 0; fi
+            if ls /vendor/lib64/hw/audio.primary.*.so /vendor/lib/hw/audio.primary.*.so 2>/dev/null | grep -v 'audio.primary.default.so' | head -1 | grep -q .; then echo LEGACY; exit 0; fi
+            echo UNKNOWN
+        """.trimIndent()
+        val (rc, out) = runSu(script)
+        if (rc != 0) return "UNKNOWN"
+        val line = out.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "UNKNOWN"
+        return if (line in setOf("AIDL", "HIDL", "LEGACY", "UNKNOWN")) line else "UNKNOWN"
     }
 
     /** 读取 CPU/DSP/GPU/电池温度,用于测延迟时判断是否热降频。
@@ -881,6 +915,18 @@ class MainActivity : Activity() {
                 return@thread
             }
             log("✓ root 正常")
+            log("② 探测音频 HAL 方案…")
+            val scheme = detectHalScheme()
+            log("音频 HAL 方案: $scheme")
+            if (scheme != "LEGACY" && scheme != "HIDL") {
+                log("✗ 此设备为 $scheme 音频 HAL,不加载 audio.primary.*.so,已拦截安装")
+                handler.post {
+                    Toast.makeText(this@MainActivity,
+                        "此设备($scheme)暂不支持 HAL 模块安装", Toast.LENGTH_LONG).show()
+                }
+                return@thread
+            }
+            log("✓ 方案可用,继续")
             val cur = moduleInstalledVersion()
             log(if (cur != null) "当前模块版本: $cur" else "未检测到已装模块")
             log("② 解出内置模块包…")
@@ -896,7 +942,7 @@ class MainActivity : Activity() {
                 log("✓ Magisk 安装成功")
             } else {
                 log("magisk 失败(rc=$rc),试 ksud module install …\n$out")
-                val (rc2, out2) = runSu("ksud module install \"${zip.absolutePath}\"")
+                val (rc2, out2) = runSu("/data/adb/ksud module install \"${zip.absolutePath}\"")
                 if (rc2 == 0) {
                     rc = 0
                     log("✓ KernelSU 安装成功")
