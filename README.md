@@ -11,7 +11,45 @@
 - 角色包:单 zip 导入/导出,本地管理
 - 共享件(hubert/rmvpe/fcpe/df3r + periphery)首启在线下载,支持抱脸/魔塔双镜像
 - catalog.json 在线索引:按设备 SoC 自动过滤可用资源
-- 支持设备表见 `model-builder/catalog.json` 的 `devices` 字段
+
+## 设备兼容性与安装拦截
+
+> 两个维度分开看:catalog 的 `devices` 表 = **NPU 推理支持**(哪些 SoC 有编译好的共享件);下表 = **HAL 安装门槛**(系统环境是否符合机架机制)。两者都满足才能完整使用。
+
+### 已验证基线(开发机实测)
+
+| 项目 | 要求 |
+|---|---|
+| 机型 | Redmi K50 Ultra(22081212C) |
+| SoC / NPU | SM8475(骁龙 8+ Gen 1)/ QNN HTP V69 |
+| 音频 HAL | Legacy / HIDL(存在 `audio.primary.*.so`) |
+| 内核 | 官方内核(如 `5.10.81-android12-...`) |
+| 系统 | Android 12(SDK 31)/ MIUI 13 |
+| Root | Magisk |
+
+### 安装拦截策略(App 内保守判定)
+
+点击「安装/更新 HAL 模块」时按以下顺序判定,不满足条件会弹窗拦截:
+
+| 档位 | 判定条件 | 表现 |
+|---|---|---|
+| 🟢 放行 | 官方内核 + Magisk + 存在 `audio.primary.*.so` + Android 12 | 直接安装 |
+| 🟡 风险确认 | KernelSU;或 Android 非 12;或音频 HAL 无法确认 | 弹窗 + 10 秒倒计时 + 勾选「我已阅读并理解上述风险」后放行 |
+| 🔴 拦截 | 无 root;或非官方内核(如 `-Jianke-Jiangnan` 昵称后缀);或 AIDL core(无 `audio.primary.*.so`) | 仅「退出」,不可跳过 |
+
+> 非官方内核 / 官改 ROM 会导致音频驱动加载异常,机架无法工作;AIDL core 不加载
+> `audio.primary.*.so`,HAL 包装器无效。为保护用户,这类设备一律拦截安装。
+
+### NPU 共享件支持(按 SoC 过滤)
+
+| SoC | soc_id | HTP 版本 | 设备示例 | 状态 |
+|---|---|---|---|---|
+| sm8475 | 42 | V69 | 骁龙 8+ Gen 1 | ✅ 已实测(K50U) |
+| sm8450 | 36 | V69 | 骁龙 8 Gen 1 | ⚠ 已编译,未实测 |
+| sm8550 | 43 | V73 | 骁龙 8 Gen 2 | ⚠ 已编译,未实测 |
+| sm8650 | 57 | V75 | 骁龙 8 Gen 3 | ⚠ 已编译,未实测 |
+| sm8750 | 69 | V79 | 骁龙 8 Elite | ⚠ 已编译,未实测 |
+| sm8850 | 87 | V81 | 骁龙 8 Elite Gen 5 | ⚠ 已编译,未实测 |
 
 ## 仓库结构
 

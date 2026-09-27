@@ -9,6 +9,7 @@ import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.widget.AdapterView
@@ -80,6 +81,10 @@ class MainActivity : Activity() {
         val runBtn = Button(this).apply {
             text = "设备检测"
             setOnClickListener { runDeviceCheck() }
+            setOnLongClickListener {
+                showSimulateTierDialog()
+                true
+            }
         }
         val runAllBtn = Button(this).apply {
             text = "3模型全检"
@@ -551,6 +556,56 @@ class MainActivity : Activity() {
         }
     }
 
+    /** 长按「设备检测」→ 模拟档位预览(测试用,只验证弹窗 UI,不真装)。 */
+    private fun showSimulateTierDialog() {
+        val items = arrayOf("模拟 GREEN(直通)", "模拟 YELLOW(勾选确认)", "模拟 RED(拦截)")
+        AlertDialog.Builder(this)
+            .setTitle("模拟档位预览(测试)")
+            .setItems(items) { _, which ->
+                when (which) {
+                    0 -> Toast.makeText(this, "🟢 GREEN:直通(无弹窗)", Toast.LENGTH_SHORT).show()
+                    1 -> showYellowDialog(fakeResult(DeviceGuard.Tier.YELLOW), simulate = true)
+                    2 -> showRedDialog(fakeResult(DeviceGuard.Tier.RED))
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /** 构造模拟判定结果(检测项用真实设备值,档位/原因用假数据)。 */
+    private fun fakeResult(tier: DeviceGuard.Tier): DeviceGuard.Result {
+        val real = DeviceGuard.evaluate()
+        return when (tier) {
+            DeviceGuard.Tier.YELLOW -> DeviceGuard.Result(
+                tier = DeviceGuard.Tier.YELLOW,
+                checks = real.checks,
+                redReasons = emptyList(),
+                yellowReasons = listOf(
+                    "KernelSU 环境:与 Magisk 行为差异较大,未经广泛测试(模拟)",
+                    "Android ${Build.VERSION.RELEASE}(SDK=${DeviceGuard.sdkInt()}) 未经实测,仅在 Android 12 验证(模拟)"
+                ),
+                kernelVersion = real.kernelVersion,
+                halScheme = real.halScheme,
+                rootType = "ksu",
+                apState = real.apState
+            )
+            DeviceGuard.Tier.RED -> DeviceGuard.Result(
+                tier = DeviceGuard.Tier.RED,
+                checks = real.checks,
+                redReasons = listOf(
+                    "检测到非官方内核:6.6.77-Jianke-Jiangnan(模拟)",
+                    "音频 HAL 为 AIDL core(无 audio.primary.*.so),wrapper 无法生效(模拟)"
+                ),
+                yellowReasons = emptyList(),
+                kernelVersion = real.kernelVersion,
+                halScheme = real.halScheme,
+                rootType = "ksu",
+                apState = real.apState
+            )
+            else -> real
+        }
+    }
+
     private fun runAll() {
         val profile = profSwitch.isChecked
         log("3 模型全检 (profile=" + profile + ")…")
@@ -989,17 +1044,16 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun showYellowDialog(guard: DeviceGuard.Result) {
+    private fun showYellowDialog(guard: DeviceGuard.Result, simulate: Boolean = false) {
         val risks = guard.yellowReasons.joinToString("\n• ", "• ") { it }
-        // 勾选框 + 继续按钮都在自定义 view 里,AlertDialog 的按钮由代码动态启用
+        // 勾选框立即可勾;「继续安装」按钮 10 秒倒计时(开屏广告样式)后才可点
         val cb = android.widget.CheckBox(this).apply {
             text = "我已阅读并理解上述风险"
-            isEnabled = false   // 3 秒后才可勾选(防手快,强制阅读)
         }
         val tv = TextView(this).apply {
             text = "检测到以下条件未完全符合已验证基线:\n$risks\n\n" +
                 "安装后可能出现:无声、变声失败、系统音频异常。\n" +
-                "3 秒后可勾选确认。"
+                "请阅读并勾选确认;「继续安装」将在 10 秒倒计时后可用。"
             setPadding(24, 8, 24, 8)
         }
         val ll = LinearLayout(this).apply {
@@ -1017,15 +1071,35 @@ class MainActivity : Activity() {
         dlg.show()
         val continueBtn = dlg.getButton(AlertDialog.BUTTON_POSITIVE)
         continueBtn.isEnabled = false
+        continueBtn.text = "继续安装 (10)"
         continueBtn.setOnClickListener {
             dlg.dismiss()
-            doInstallHalModule()
+            if (simulate) {
+                log("✓ [模拟] 用户已确认风险(仅预览,未实际安装)")
+            } else {
+                doInstallHalModule()
+            }
         }
-        // 3 秒后启用勾选框
-        handler.postDelayed({
-            if (dlg.isShowing) cb.isEnabled = true
-        }, 3000)
-        cb.setOnCheckedChangeListener { _, checked -> continueBtn.isEnabled = checked }
+        // 10 秒倒计时:每秒更新按钮文字,到 0 后受勾选框控制
+        val ticker = object : Runnable {
+            var remaining = 10
+            override fun run() {
+                if (!dlg.isShowing) return
+                remaining--
+                if (remaining <= 0) {
+                    continueBtn.text = "继续安装"
+                    continueBtn.isEnabled = cb.isChecked
+                } else {
+                    continueBtn.text = "继续安装 ($remaining)"
+                    handler.postDelayed(this, 1000)
+                }
+            }
+        }
+        handler.postDelayed(ticker, 1000)
+        cb.setOnCheckedChangeListener { _, checked ->
+            // 倒计时结束后勾选才生效;倒计时中保持禁用
+            if (ticker.remaining <= 0) continueBtn.isEnabled = checked
+        }
     }
 
     /** 拦截弹窗放行后的真正安装流程(后台线程)。 */
