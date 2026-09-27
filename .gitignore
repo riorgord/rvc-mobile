@@ -8,6 +8,9 @@ android/*.iml
 android/app/.cxx/
 android/app/src/main/assets/*.tflite
 
+# Release signing (never commit)
+android/keystore.properties
+
 # Python cache / build
 __pycache__/
 *.pyc
