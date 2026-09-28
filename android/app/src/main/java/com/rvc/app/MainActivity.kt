@@ -1,5 +1,15 @@
 package com.rvc.app
 
+/**
+ * ⚠ P2.6 已退役(2026-09-28):旧手写 View UI。
+ *
+ * - launcher 已切到 RvcComposeActivity(Compose + Miuix 新 UI);
+ * - manifest 已移除本 Activity 声明(不再有外部启动入口);
+ * - 全部调试功能已由新 UI 调试页承接(版本号 5 连击进入):
+ *   设备检测 / 3模型全检 / 全链路 / ②拆分 / iSTFT / 模拟 / 实时 / 测延迟 / 参数面板 / 日志流
+ * - 本文件保留留档(git 历史中亦有);如需恢复,加回 manifest 声明即可。
+ */
+
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent

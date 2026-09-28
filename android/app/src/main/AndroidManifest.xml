@@ -38,11 +38,6 @@
             </intent-filter>
         </activity>
 
-        <!-- 旧手写 View UI:保留为调试备用(不再占 launcher,调试页保留入口) -->
-        <activity
-            android:name=".MainActivity"
-            android:exported="true" />
-
         <!-- P0.5 冒烟验证入口(adb 直接启动,不占 launcher;exported=true 供 shell 启动) -->
         <activity
             android:name=".SmokeActivity"
