@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -16,6 +17,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import androidx.navigationevent.compose.LocalNavigationEventDispatcherOwner
+import androidx.navigationevent.compose.rememberNavigationEventDispatcherOwner
 import top.yukonga.miuix.kmp.basic.NavigationBar
 import top.yukonga.miuix.kmp.basic.NavigationBarItem
 import top.yukonga.miuix.kmp.basic.Scaffold
@@ -61,35 +64,36 @@ private fun RvcApp() {
     var current by rememberSaveable { mutableIntStateOf(0) }
     val tabs = RvcTab.entries
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = tabs[current].label,
-            )
-        },
-        bottomBar = {
-            NavigationBar {
-                tabs.forEachIndexed { index, tab ->
-                    NavigationBarItem(
-                        selected = current == index,
-                        onClick = { current = index },
-                        icon = tab.icon,
-                        label = tab.label,
-                    )
+    // Miuix 0.9.3 Overlay 组件(OverlayDialog 等)内部 NavigationBackHandler 需要
+    // LocalNavigationEventDispatcherOwner;此处根部提供(手写导航,无 navigation3 宿主)。
+    val navOwner = rememberNavigationEventDispatcherOwner(enabled = true, parent = null)
+    CompositionLocalProvider(LocalNavigationEventDispatcherOwner provides navOwner) {
+        Scaffold(
+            topBar = {
+                TopAppBar(
+                    title = tabs[current].label,
+                )
+            },
+            bottomBar = {
+                NavigationBar {
+                    tabs.forEachIndexed { index, tab ->
+                        NavigationBarItem(
+                            selected = current == index,
+                            onClick = { current = index },
+                            icon = tab.icon,
+                            label = tab.label,
+                        )
+                    }
                 }
-            }
-        },
-    ) { contentPadding ->
-        when (tabs[current]) {
-            RvcTab.ROLES -> RolesScreen()
-            RvcTab.LIBRARY -> LibraryScreen()
-            RvcTab.SETTINGS -> Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(contentPadding),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("「${tabs[current].label}」页(P2.4 实现)")
+            },
+        ) { contentPadding ->
+            when (tabs[current]) {
+                RvcTab.ROLES -> RolesScreen(contentPadding)
+                RvcTab.LIBRARY -> LibraryScreen(contentPadding)
+                RvcTab.SETTINGS -> SettingsScreen(
+                    contentPadding = contentPadding,
+                    onOpenDebug = { /* P2.5:跳转调试页 */ },
+                )
             }
         }
     }

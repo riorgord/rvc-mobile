@@ -86,6 +86,9 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.3")
     // ViewModel(Compose 集成:viewModel() + collectAsStateWithLifecycle 等)
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    // Miuix 0.9.3 Overlay 组件(OverlayDialog 等)内部 NavigationBackHandler 依赖
+    // LocalNavigationEventDispatcherOwner;显式声明以在根组件提供(版本与 miuix 传递一致)
+    implementation("androidx.navigationevent:navigationevent-compose:1.1.2")
 
     // Miuix(HyperOS 风格组件库,Apache-2.0)
     // 0.9.3 = Compose 1.11,需 compileSdk 37 + AGP 8.9.1+;0.9.4 需 AGP 9.1+(Chaquopy 17 上限内选 0.9.3)

@@ -261,4 +261,146 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
             _downloading.value = false
         }
     }
+
+    // ---------------- 设置(HAL / SoC) ----------------
+
+    private val _halActive = MutableStateFlow(false)
+    val halActive: StateFlow<Boolean> = _halActive.asStateFlow()
+
+    /** 设备检测结果(安装 HAL 模块前的档位判定)。null = 未检测。 */
+    private val _guard = MutableStateFlow<DeviceGuard.Result?>(null)
+    val guard: StateFlow<DeviceGuard.Result?> = _guard.asStateFlow()
+
+    /** 模块安装流程状态文案(操作记录,UI 展示)。 */
+    private val _installLog = MutableStateFlow<String?>(null)
+    val installLog: StateFlow<String?> = _installLog.asStateFlow()
+
+    /** 是否已提交安装等待重启。 */
+    private val _installPendingReboot = MutableStateFlow(false)
+    val installPendingReboot: StateFlow<Boolean> = _installPendingReboot.asStateFlow()
+
+    private val _soc = MutableStateFlow<String?>(null)
+    val soc: StateFlow<String?> = _soc.asStateFlow()
+
+    fun refreshHalState() {
+        // 开关反映"桥接是否正在运行",而非"模块是否已安装"
+        _halActive.value = HalRvcBridge.isActive()
+        _soc.value = RoleManager.effectiveSoc().ifEmpty { null }
+    }
+
+    /** HAL 桥接开关。启动时用当前角色 + 默认参数(P2.5 调试页可改参数后重启桥接)。 */
+    fun setHalActive(active: Boolean) {
+        android.util.Log.d("RvcVM", "setHalActive($active) bridgeActive=${HalRvcBridge.isActive()}")
+        if (active == HalRvcBridge.isActive()) {
+            _halActive.value = active
+            return
+        }
+        viewModelScope.launch {
+            if (!active) {
+                withContext(Dispatchers.IO) { HalRvcBridge.stop() }
+                _halActive.value = false
+            } else {
+                if (!core.isHalModuleActive()) {
+                    android.util.Log.w("RvcVM", "HAL module not active")
+                    _installLog.value = "需要 root + 安装 RVC HAL 模块(ro.hardware.audio.primary 非 rvc),无法启动变声"
+                    _halActive.value = false
+                    return@launch
+                }
+                val roleDir = RoleManager.currentRoleDir(core.filesDir, core.prefs)
+                withContext(Dispatchers.IO) {
+                    HalRvcBridge.start(getApplication(), 0, 0.75f, 0.75f, 0.33f, roleDir)
+                }
+                _halActive.value = HalRvcBridge.isActive()
+            }
+        }
+    }
+
+    /** 设备兼容性检测(DeviceGuard.evaluate,后台线程)。 */
+    fun runDeviceCheck() {
+        viewModelScope.launch {
+            _installLog.value = "① 设备兼容性检测…"
+            val guard = withContext(Dispatchers.IO) { DeviceGuard.evaluate() }
+            _guard.value = guard
+            _installLog.value = "检测结果: tier=${guard.tier} root=${guard.rootType} " +
+                "kernel_official=${guard.checks[1].pass} audio_primary=${guard.checks[2].pass} " +
+                "sdk=${guard.checks[3].detail}"
+        }
+    }
+
+    /** 安装/更新 HAL 模块(后台线程;档位 RED/YELLOW 由 UI 层弹窗处理)。 */
+    fun installHalModule() {
+        viewModelScope.launch {
+            _installLog.value = "① 设备兼容性检测…"
+            val guard = withContext(Dispatchers.IO) { DeviceGuard.evaluate() }
+            _guard.value = guard
+            when (guard.tier) {
+                DeviceGuard.Tier.RED -> _installLog.value = "✗ 设备不满足机架运行条件,已拦截安装"
+                DeviceGuard.Tier.YELLOW -> _installLog.value = "⚠ 设备条件有风险,需用户确认后放行"
+                DeviceGuard.Tier.GREEN -> doInstallHalModule()
+            }
+        }
+    }
+
+    /** YELLOW 弹窗确认后继续安装。 */
+    fun confirmInstallHalModule() {
+        doInstallHalModule()
+    }
+
+    private fun doInstallHalModule() {
+        viewModelScope.launch {
+            val log = withContext(Dispatchers.IO) {
+                val sb = StringBuilder("✓ 用户已确认风险,继续安装\n")
+                sb.append("① 检查 root…\n")
+                if (!core.hasRoot()) {
+                    return@withContext "✗ 未获得 root 授权:请先在 Magisk/KernelSU 中允许本应用"
+                }
+                sb.append("✓ root 正常\n② 探测音频 HAL 方案…\n")
+                val scheme = core.detectHalScheme()
+                sb.append("音频 HAL 方案: $scheme\n")
+                if (scheme != "LEGACY" && scheme != "HIDL") {
+                    return@withContext "✗ 此设备为 $scheme 音频 HAL,不加载 audio.primary.*.so,已拦截安装"
+                }
+                sb.append("✓ 方案可用,继续\n")
+                val cur = core.moduleInstalledVersion()
+                sb.append(if (cur != null) "当前模块版本: $cur\n" else "未检测到已装模块\n")
+                sb.append("② 解出内置模块包…\n")
+                val zip = core.copyBundledModuleZip()
+                if (zip == null) return@withContext "✗ 内置模块包读取失败"
+                sb.append("✓ 已解出: ${zip.absolutePath}\n③ 执行 magisk --install-module …\n")
+                var (rc, out) = core.runSu("magisk --install-module \"${zip.absolutePath}\"")
+                if (rc == 0) {
+                    sb.append("✓ Magisk 安装成功\n")
+                } else {
+                    sb.append("magisk 失败(rc=$rc),试 ksud module install …\n$out\n")
+                    val (rc2, out2) = core.runSu("/data/adb/ksud module install \"${zip.absolutePath}\"")
+                    if (rc2 == 0) {
+                        rc = 0
+                        sb.append("✓ KernelSU 安装成功\n")
+                    } else {
+                        sb.append("✗ KernelSU 也失败(rc=$rc2)\n$out2\n")
+                    }
+                }
+                if (rc != 0) return@withContext "✗ 自动安装失败,请用 Magisk 应用手动刷 rvc_module.zip"
+                sb.append("④ 安装/更新已提交,重启后生效\n")
+                sb.toString()
+            }
+            _installLog.value = log
+            if (log.contains("④ 安装/更新已提交")) {
+                _installPendingReboot.value = true
+            }
+        }
+    }
+
+    /** 立即重启(安装 HAL 模块后)。 */
+    fun rebootNow() {
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { core.runSu("reboot") }
+        }
+    }
+
+    /** 清除安装结果状态(UI 消费后)。 */
+    fun consumeInstallState() {
+        _installLog.value = null
+        _installPendingReboot.value = false
+    }
 }
