@@ -25,7 +25,6 @@ import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.overlay.OverlayDialog
 import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
 
 /**
  * 设置 tab:
@@ -40,7 +39,6 @@ fun SettingsScreen(
     vm: RvcViewModel = viewModel(),
     onOpenDebug: () -> Unit,
 ) {
-    val halActive by vm.halActive.collectAsState()
     val guard by vm.guard.collectAsState()
     val installLog by vm.installLog.collectAsState()
     val installPendingReboot by vm.installPendingReboot.collectAsState()
@@ -66,39 +64,29 @@ fun SettingsScreen(
             .fillMaxSize()
             .padding(contentPadding),
     ) {
-        item(key = "hal-title") { SmallTitle(text = "实时变声") }
+        // P2.7:HAL 开关已移到首页「变声」大开关,设置页只留模块安装/设备/关于
+        item(key = "hal-module") {
+            ArrowPreference(
+                title = "安装 / 更新 HAL 模块",
+                summary = "Magisk/KernelSU 模块,需 root;重启后生效",
+                onClick = { vm.installHalModule() },
+            )
+        }
 
-            item(key = "hal-switch") {
-                SwitchPreference(
-                    checked = halActive,
-                    onCheckedChange = { vm.setHalActive(it) },
-                    title = "HAL 桥接",
-                    summary = "开启后系统音频走 RVC 变声链路",
-                )
-            }
-
-            item(key = "hal-module") {
-                ArrowPreference(
-                    title = "安装 / 更新 HAL 模块",
-                    summary = "Magisk/KernelSU 模块,需 root;重启后生效",
-                    onClick = { vm.installHalModule() },
-                )
-            }
-
-            if (installLog != null) {
-                item(key = "install-log") {
-                    Card(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(bottom = 8.dp),
-                    ) {
-                        Text(
-                            text = installLog ?: "",
-                            modifier = Modifier.padding(16.dp),
-                        )
-                    }
+        if (installLog != null) {
+            item(key = "install-log") {
+                Card(
+                    modifier = Modifier
+                        .padding(horizontal = 12.dp)
+                        .padding(bottom = 8.dp),
+                ) {
+                    Text(
+                        text = installLog ?: "",
+                        modifier = Modifier.padding(16.dp),
+                    )
                 }
             }
+        }
 
             item(key = "device-title") { SmallTitle(text = "设备") }
 
@@ -115,7 +103,7 @@ fun SettingsScreen(
             item(key = "about") {
                 ArrowPreference(
                     title = "RVC Mobile",
-                    summary = "版本 0.1.0b(点击 5 次进入调试)",
+                    summary = "版本 0.1.0b",
                     onClick = {
                         versionTaps++
                         if (versionTaps >= 5) {

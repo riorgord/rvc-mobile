@@ -61,10 +61,29 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
         _currentRoleId.value = RoleManager.currentRoleId(core.prefs)
     }
 
-    /** 切换当前角色(HAL 运行中时由 UI 层提示需重启 HAL)。 */
+    /** 切换当前角色。若桥接运行中:自动停止并提示需重新开启变声(旧 UI 同逻辑)。 */
     fun setCurrentRole(id: String) {
         RoleManager.setCurrentRole(core.prefs, id)
         _currentRoleId.value = id
+        if (HalRvcBridge.isActive()) {
+            HalRvcBridge.stop()
+            _halActive.value = false
+            _notice.value = "角色已切换,变声已停止,请重新开启变声"
+        }
+    }
+
+    // ---------------- 一次性提示(跨页全局,如首页/模型包共用) ----------------
+
+    private val _notice = MutableStateFlow<String?>(null)
+    val notice: StateFlow<String?> = _notice.asStateFlow()
+
+    /** 发一条一次性提示(UI 展示后调 consumeNotice 清除)。 */
+    fun postNotice(msg: String) {
+        _notice.value = msg
+    }
+
+    fun consumeNotice() {
+        _notice.value = null
     }
 
     /** SAF 导入角色包(content:// uri)。成功/失败经 importResult 回调。 */

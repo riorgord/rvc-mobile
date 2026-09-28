@@ -26,8 +26,8 @@ import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.Text
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.icon.MiuixIcons
-import top.yukonga.miuix.kmp.icon.extended.CloudFill
 import top.yukonga.miuix.kmp.icon.extended.ContactsCircle
+import top.yukonga.miuix.kmp.icon.extended.Mic
 import top.yukonga.miuix.kmp.icon.extended.Settings
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -35,10 +35,10 @@ import top.yukonga.miuix.kmp.theme.ThemeController
 
 /**
  * P2.1:Compose + Miuix 新 UI 入口(launcher)。
+ * P2.7:三 tab 改为 变声(首页默认)/ 模型包 / 设置。
  *
- * 三 tab 底部导航:角色 / 在线库 / 设置。
  * 主题跟随系统(Miuix ColorSchemeMode.System)。
- * 业务逻辑后续全部走 RvcCore(经 ViewModel),本文件只负责壳。
+ * 业务逻辑全部走 RvcCore(经 ViewModel),本文件只负责壳。
  */
 class RvcComposeActivity : ComponentActivity() {
 
@@ -55,8 +55,8 @@ class RvcComposeActivity : ComponentActivity() {
 
 /** 三个 tab 的枚举。 */
 private enum class RvcTab(val label: String, val icon: ImageVector) {
-    ROLES("角色", MiuixIcons.ContactsCircle),
-    LIBRARY("在线库", MiuixIcons.CloudFill),
+    HOME("变声", MiuixIcons.Mic),
+    MODEL_PACK("模型包", MiuixIcons.ContactsCircle),
     SETTINGS("设置", MiuixIcons.Settings),
 }
 
@@ -97,8 +97,8 @@ private fun RvcApp() {
             },
         ) { contentPadding ->
             when (tabs[current]) {
-                RvcTab.ROLES -> RolesScreen(contentPadding)
-                RvcTab.LIBRARY -> LibraryScreen(contentPadding)
+                RvcTab.HOME -> HomeScreen(contentPadding)
+                RvcTab.MODEL_PACK -> ModelPackScreen(contentPadding)
                 RvcTab.SETTINGS -> SettingsScreen(
                     contentPadding = contentPadding,
                     onOpenDebug = {
