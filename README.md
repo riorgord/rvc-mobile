@@ -127,10 +127,8 @@ python model-builder/build_shared.py \
 
 - App 代码:**GPL-3.0**(见 `LICENSE`)
 - 共享件:MIT + Apache-2.0 混合(详见 `THIRD_PARTY_NOTICES.md`)
-- 角色包:仅收录有明确授权/版权干净的模型;游戏厂音源、CC-BY-NC 等一律只允许本地导入
+- 角色包:仅收录有明确授权/版权干净的模型。
 
 ## 红线
 
-- 不收录、不传播任何游戏厂/未授权音源(米哈游、NEXON、库洛、鹰角、SHIFT UP 等)
-- 语雀作者那批(CC-BY-NC + 禁二次配布)只做本地导入
-- RVC 官方 lj1995 底模带「仅供研究使用」条款,基于它的微调模型不进 catalog
+- 不收录、不传播任何未经授权的音源训练和编译好的模型
