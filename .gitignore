@@ -22,6 +22,9 @@ __pycache__/
 # Model assets (huge, not versioned)
 android/app/src/main/assets/models/
 
+# QNN SDK headers (QTI license, not redistributed; copy from your QNN SDK install)
+native/qnn_include/
+
 # OS / editor
 .DS_Store
 Thumbs.db

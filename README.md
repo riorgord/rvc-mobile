@@ -70,13 +70,42 @@ docs/                     发布与合规文档
 
 ## 构建
 
+### 环境要求
+
+| 依赖 | 版本 | 说明 |
+|---|---|---|
+| JDK | 17+ | 建议 JDK 21 |
+| Android SDK | compileSdk 37 | ANDROID_HOME 指向 SDK |
+| Gradle | 8.13 | 仓库自带 wrapper(`android/gradle/wrapper`) |
+| AGP | 8.13 | 见 `android/settings.gradle.kts` |
+| Chaquopy 构建 Python | 3.11 | 本地 Python,Chaquopy 17 用 |
+| QNN SDK | 2.47+ | 仅 native 层编译需要头文件(见下) |
+
+### 编译 QNN 头文件(仅 native/ 需要)
+
+`native/qnn_include/`(QNN SDK 头文件)因 QTI 许可**不随本仓库分发**。构建 `libgsv_qnn.so` 前:
+
 ```bash
-# Android APK
+# 从你的 QNN SDK 安装目录拷贝头文件树
+# SDK 解包后通常在 <sdk>/include/QNN/ 下
+cp -r <qnn-sdk>/include/QNN/* native/qnn_include/
+```
+
+> 只编译 Android APK(不含 native 层改动)不需要这一步;`libgsv_qnn.so` 预编译产物随 `jniLibs/` 分发。
+
+### 构建 APK
+
+```bash
 cd android
 ./gradlew clean :app:assembleDebug
 # 注意:删除/变更 assets 里的大文件后必须 clean 重建,否则 APK 会虚胖
+```
 
-# 共享件打包
+### 共享件打包
+
+```bash
+# 共享件源文件(model-builder/shared_src/)不入库,需从授权来源准备:
+#   models/hubert_mix_def_t4800.bin / rmvpe / fcpe / df3r 等(见 THIRD_PARTY_NOTICES.md)
 python model-builder/build_shared.py \
   --assets model-builder/shared_src \
   --out <staging> \

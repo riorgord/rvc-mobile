@@ -35,6 +35,11 @@
 
 | 组件 | 来源 | 许可证 | 说明 |
 |---|---|---|---|
+| Miuix(ui / preference / icons) | yukonga/Miuix | Apache-2.0 | HyperOS 风格 Compose 组件库(0.9.3,UI 全部基于它) |
+| androidx.activity:activity-compose | AndroidX | Apache-2.0 | Compose Activity 集成 |
+| androidx.lifecycle:lifecycle-viewmodel-compose | AndroidX | Apache-2.0 | ViewModel + Compose 集成 |
+| androidx.navigationevent:navigationevent-compose | AndroidX | Apache-2.0 | Overlay 组件返回事件分发 |
+| Compose Multiplatform(org.jetbrains.compose) | JetBrains | Apache-2.0 | Compose 运行时/基础组件(1.11.1) |
 | numpy | NumPy 项目 | BSD-3-Clause | Python 运行时数组计算 |
 | Chaquopy 运行时 | chaquo/chaquopy | MIT | Python 嵌入运行时 |
 | ONNX Runtime | microsoft/onnxruntime | MIT | `libonnxruntime.so` |
