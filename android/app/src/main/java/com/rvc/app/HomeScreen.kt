@@ -58,6 +58,7 @@ fun HomeScreen(
     val brightness by vm.debugBrightness.collectAsState()
 
     var showF0Dialog by remember { mutableStateOf(false) }
+    var manageRole by remember { mutableStateOf<RoleInfo?>(null) }
 
     // 一次性提示:显示 3 秒后自动清除
     LaunchedEffect(notice) {
@@ -148,10 +149,21 @@ fun HomeScreen(
                         .padding(bottom = 8.dp),
                     onClick = { vm.setCurrentRole(role.modelId) },
                 ) {
-                    Text(
-                        text = if (selected) "✓ ${role.name} (${role.modelId})" else "${role.name} (${role.modelId})",
-                        modifier = Modifier.padding(16.dp),
-                    )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = if (selected) "✓ ${role.name} (${role.modelId})" else "${role.name} (${role.modelId})",
+                            modifier = Modifier.weight(1f),
+                        )
+                        TextButton(
+                            text = "管理",
+                            onClick = { manageRole = role },
+                        )
+                    }
                 }
             }
         }
@@ -230,6 +242,14 @@ fun HomeScreen(
                 )
             }
         }
+    }
+
+    // 角色管理弹窗
+    manageRole?.let { role ->
+        RoleManageDialog(
+            role = role,
+            onDismiss = { manageRole = null },
+        )
     }
 }
 

@@ -103,7 +103,7 @@ fun SettingsScreen(
             item(key = "about") {
                 ArrowPreference(
                     title = "RVC Mobile",
-                    summary = "版本 0.1.0b",
+                    summary = "版本 0.1.1a",
                     onClick = {
                         versionTaps++
                         if (versionTaps >= 5) {

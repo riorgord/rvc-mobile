@@ -72,6 +72,30 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /** 删除角色。若删除的是当前角色且桥接运行中 → 停止并提示。 */
+    fun deleteRole(modelId: String) {
+        val ok = RoleManager.deleteRole(core.filesDir, core.prefs, modelId)
+        refreshRoles()
+        if (ok) {
+            if (HalRvcBridge.isActive()) {
+                HalRvcBridge.stop()
+                _halActive.value = false
+                _notice.value = "角色已删除,变声已停止"
+            } else {
+                _notice.value = "角色已删除"
+            }
+        } else {
+            _notice.value = "删除失败"
+        }
+    }
+
+    /** 重命名角色。成功返回 true(UI 关弹窗)。 */
+    fun renameRole(modelId: String, newName: String): Boolean {
+        val ok = RoleManager.renameRole(core.filesDir, modelId, newName)
+        if (ok) refreshRoles()
+        return ok
+    }
+
     // ---------------- 一次性提示(跨页全局,如首页/模型包共用) ----------------
 
     private val _notice = MutableStateFlow<String?>(null)

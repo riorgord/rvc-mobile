@@ -121,6 +121,33 @@ object RoleManager {
         prefs.edit().putString(PREF_ROLE, id).apply()
     }
 
+    /** 删除角色(整个角色目录)。若删除的是当前角色,清除选中。 */
+    fun deleteRole(filesDir: File, prefs: SharedPreferences, modelId: String): Boolean {
+        val dir = File(rolesDir(filesDir), modelId)
+        if (!dir.isDirectory) return false
+        val ok = dir.deleteRecursively()
+        if (ok && currentRoleId(prefs) == modelId) {
+            setCurrentRole(prefs, null)
+        }
+        return ok
+    }
+
+    /** 重命名角色(只改 manifest.json 的 name,不动 model_id/目录名)。 */
+    fun renameRole(filesDir: File, modelId: String, newName: String): Boolean {
+        val dir = File(rolesDir(filesDir), modelId)
+        val mf = File(dir, "manifest.json")
+        if (!mf.isFile) return false
+        return try {
+            val j = JSONObject(mf.readText())
+            j.put("name", newName.trim())
+            mf.writeText(j.toString())
+            true
+        } catch (e: Exception) {
+            Log.w(TAG, "rename role failed: $modelId", e)
+            false
+        }
+    }
+
     fun isSharedReady(filesDir: File): Boolean =
         REQUIRED_SHARED.all { File(filesDir, it).isFile }
 
