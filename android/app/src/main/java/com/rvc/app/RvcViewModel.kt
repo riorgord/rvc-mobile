@@ -308,7 +308,7 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
         _soc.value = RoleManager.effectiveSoc().ifEmpty { null }
     }
 
-    /** HAL 桥接开关。启动时用当前角色 + 默认参数(P2.5 调试页可改参数后重启桥接)。 */
+    /** HAL 桥接开关。启动时用当前角色 + 首页参数面板当前值(改参数后重启桥接生效)。 */
     fun setHalActive(active: Boolean) {
         android.util.Log.d("RvcVM", "setHalActive($active) bridgeActive=${HalRvcBridge.isActive()}")
         if (active == HalRvcBridge.isActive()) {
@@ -327,8 +327,10 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
                     return@launch
                 }
                 val roleDir = RoleManager.currentRoleDir(core.filesDir, core.prefs)
+                // 参数必须读首页面板当前值(修复:之前硬编码 0/0.75/0.75/0.33,key 等调整无效)
+                val p = params()
                 withContext(Dispatchers.IO) {
-                    HalRvcBridge.start(getApplication(), 0, 0.75f, 0.75f, 0.33f, roleDir)
+                    HalRvcBridge.start(getApplication(), p.key, p.rms, p.idx, p.prot, roleDir)
                 }
                 _halActive.value = HalRvcBridge.isActive()
             }
@@ -473,12 +475,23 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
     val latencyMs: StateFlow<String?> = _latencyMs.asStateFlow()
 
     fun setDebugProfile(v: Boolean) { _debugProfile.value = v }
-    fun setDebugKey(v: String) { _debugKey.value = v }
-    fun setDebugRms(v: String) { _debugRms.value = v }
-    fun setDebugIdx(v: String) { _debugIdx.value = v }
-    fun setDebugProt(v: String) { _debugProt.value = v }
-    fun setDebugF0(v: String) { _debugF0.value = v }
-    fun setDebugBrightness(v: Int) { _debugBrightness.value = v }
+    fun setDebugKey(v: String) { _debugKey.value = v; onParamsChanged() }
+    fun setDebugRms(v: String) { _debugRms.value = v; onParamsChanged() }
+    fun setDebugIdx(v: String) { _debugIdx.value = v; onParamsChanged() }
+    fun setDebugProt(v: String) { _debugProt.value = v; onParamsChanged() }
+    fun setDebugF0(v: String) { _debugF0.value = v; onParamsChanged() }
+    fun setDebugBrightness(v: Int) { _debugBrightness.value = v; onParamsChanged() }
+
+    // 参数一变立刻触发:若桥接运行中自动停止(和切模型一样),
+    // 提示需重新开启变声;改完由用户自己点开开关。
+    private fun onParamsChanged() {
+        if (!HalRvcBridge.isActive()) return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) { HalRvcBridge.stop() }
+            _halActive.value = false
+            _notice.value = "参数已修改,变声已停止,请重新开启变声"
+        }
+    }
 
     /** 调试页打开时:恢复上次实测延迟。 */
     fun refreshLatency() {

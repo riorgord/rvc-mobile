@@ -58,25 +58,12 @@ fun HomeScreen(
     val brightness by vm.debugBrightness.collectAsState()
 
     var showF0Dialog by remember { mutableStateOf(false) }
-    // 运行中改参数只提示一次,避免连续拖动狂弹
-    var paramWarned by remember { mutableStateOf(false) }
-
-    LaunchedEffect(halActive) {
-        paramWarned = false
-    }
 
     // 一次性提示:显示 3 秒后自动清除
     LaunchedEffect(notice) {
         if (notice != null) {
             delay(3000)
             vm.consumeNotice()
-        }
-    }
-
-    fun onParamChanged() {
-        if (halActive && !paramWarned) {
-            paramWarned = true
-            vm.postNotice("参数已修改,重启变声后生效")
         }
     }
 
@@ -175,24 +162,16 @@ fun HomeScreen(
         }
 
         item(key = "param-key") {
-            ParamRow(label = "key 变调(半音)", value = key, onChange = {
-                vm.setDebugKey(it); onParamChanged()
-            })
+            ParamRow(label = "key 变调(半音)", value = key, onChange = { vm.setDebugKey(it) })
         }
         item(key = "param-rms") {
-            ParamRow(label = "rms_mix_rate", value = rms, onChange = {
-                vm.setDebugRms(it); onParamChanged()
-            })
+            ParamRow(label = "rms_mix_rate", value = rms, onChange = { vm.setDebugRms(it) })
         }
         item(key = "param-idx") {
-            ParamRow(label = "index_rate", value = idx, onChange = {
-                vm.setDebugIdx(it); onParamChanged()
-            })
+            ParamRow(label = "index_rate", value = idx, onChange = { vm.setDebugIdx(it) })
         }
         item(key = "param-prot") {
-            ParamRow(label = "protect 0-0.5", value = prot, onChange = {
-                vm.setDebugProt(it); onParamChanged()
-            })
+            ParamRow(label = "protect 0-0.5", value = prot, onChange = { vm.setDebugProt(it) })
         }
 
         item(key = "param-f0") {
@@ -221,10 +200,7 @@ fun HomeScreen(
                 )
                 Slider(
                     value = brightness.toFloat(),
-                    onValueChange = {
-                        vm.setDebugBrightness(it.toInt())
-                        onParamChanged()
-                    },
+                    onValueChange = { vm.setDebugBrightness(it.toInt()) },
                     valueRange = 0f..100f,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -248,7 +224,6 @@ fun HomeScreen(
                     onClick = {
                         vm.setDebugF0(m)
                         vm.ensureF0(m)
-                        onParamChanged()
                         showF0Dialog = false
                     },
                     modifier = Modifier.fillMaxWidth(),
