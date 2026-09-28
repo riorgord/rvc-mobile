@@ -82,13 +82,14 @@ private fun RvcApp() {
     ) { contentPadding ->
         when (tabs[current]) {
             RvcTab.ROLES -> RolesScreen()
-            RvcTab.LIBRARY, RvcTab.SETTINGS -> Box(
+            RvcTab.LIBRARY -> LibraryScreen()
+            RvcTab.SETTINGS -> Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(contentPadding),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("「${tabs[current].label}」页(P2.${if (current == 1) 3 else 4} 实现)")
+                Text("「${tabs[current].label}」页(P2.4 实现)")
             }
         }
     }
