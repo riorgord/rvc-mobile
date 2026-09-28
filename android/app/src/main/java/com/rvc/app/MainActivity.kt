@@ -24,8 +24,6 @@ import android.widget.Spinner
 import android.widget.Switch
 import android.widget.TextView
 import android.widget.Toast
-import com.chaquo.python.Python
-import com.chaquo.python.android.AndroidPlatform
 import java.io.File
 import kotlin.concurrent.thread
 import java.nio.ByteBuffer
@@ -56,6 +54,7 @@ class MainActivity : Activity() {
     @Volatile private var streamRunning = false
     private val handler = android.os.Handler(android.os.Looper.getMainLooper())
     private val prefs by lazy { getSharedPreferences("rvc_prefs", MODE_PRIVATE) }
+    private val core by lazy { RvcCore(applicationContext) }
     private var roles = listOf<RoleInfo>()
     private lateinit var roleSpinner: Spinner
     private lateinit var setupProgress: ProgressBar
@@ -178,7 +177,7 @@ class MainActivity : Activity() {
                 halBtn.text = "HAL桥接(开)"
                 log("HAL 桥接已停止(恢复纯透传)")
             } else {
-                if (!isHalModuleActive()) {
+                if (!core.isHalModuleActive()) {
                     log("需要 root + 安装 RVC HAL 模块(ro.hardware.audio.primary 非 rvc),无法启动变声")
                     Toast.makeText(this@MainActivity,
                         "需要 root 权限并安装 RVC HAL 模块", Toast.LENGTH_LONG).show()
@@ -361,7 +360,7 @@ class MainActivity : Activity() {
         log("filesDir=" + filesDir.absolutePath)
         // 解压 assets → filesDir(幂等)
 
-        extract("testdata", File(filesDir, "testdata"))
+        core.extract("testdata", File(filesDir, "testdata"))
 
         log("assets 解压 OK: testdata %d".format(
             File(filesDir, "testdata").listFiles()?.size ?: 0))
@@ -401,10 +400,7 @@ class MainActivity : Activity() {
     private fun preloadDefault() {
         Thread {
             try {
-                ensurePy()
-                Python.getInstance().getModule("rvc_api")
-                    .callAttr("preload_default", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), false, RoleManager.effectiveSoc())
+                core.pyPreloadDefault()
                 f0Loaded["fcpe"] = true
                 log("fcpe 管线预载完成")
             } catch (e: Throwable) {
@@ -415,31 +411,13 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    private fun appVersionName(): String = try {
-        packageManager.getPackageInfo(packageName, 0).versionName ?: "0.0.0"
-    } catch (e: Exception) {
-        "0.0.0"
-    }
-
-    /** 版本号 "a.b.c" 数值比较: a>b → 1, a<b → -1, 相等 → 0。 */
-    private fun compareVersion(a: String, b: String): Int {
-        val pa = a.split(".").map { it.toIntOrNull() ?: 0 }
-        val pb = b.split(".").map { it.toIntOrNull() ?: 0 }
-        for (i in 0 until maxOf(pa.size, pb.size)) {
-            val x = pa.getOrElse(i) { 0 }
-            val y = pb.getOrElse(i) { 0 }
-            if (x != y) return if (x > y) 1 else -1
-        }
-        return 0
-    }
-
     /** 模型版本检查(需在后台线程调用,弹窗回主线程):
      * App 版本门槛 → 最低模型版本门槛 → 在线更新检测。 */
     private fun checkModelVersion(catalog: Catalog.CatalogData, soc: String, fromUser: Boolean) {
         val shared = Catalog.compatibleShared(catalog, soc) ?: return
         val localVer = RoleManager.installedSharedVersion(filesDir)
-        val curApp = appVersionName()
-        if (compareVersion(curApp, catalog.appMinVersion) < 0) {
+        val curApp = core.appVersionName()
+        if (core.compareVersion(curApp, catalog.appMinVersion) < 0) {
             runOnUiThread {
                 AlertDialog.Builder(this)
                     .setTitle("App 版本过低")
@@ -501,10 +479,7 @@ class MainActivity : Activity() {
         f0Progress.visibility = View.VISIBLE
         Thread {
             try {
-                ensurePy()
-                Python.getInstance().getModule("rvc_api")
-                    .callAttr("init_f0", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), m, false, RoleManager.effectiveSoc())
+                core.pyInitF0(m)
                 f0Loaded[m] = true
                 log("F0 %s 已就绪" .format(m))
             } catch (e: Throwable) {
@@ -611,11 +586,7 @@ class MainActivity : Activity() {
         log("3 模型全检 (profile=" + profile + ")…")
         Thread {
             try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test_all", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), profile, "/sdcard/rvc_exp")
-                log("RESULT_ALL: " + out.toString())
+                log("RESULT_ALL: " + core.pySelfTestAll(profile))
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
             }
@@ -627,11 +598,7 @@ class MainActivity : Activity() {
         log("全链路 (profile=" + profile + ")…")
         Thread {
             try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test_full", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), profile, "/sdcard/rvc_exp")
-                log("RESULT_FULL: " + out.toString())
+                log("RESULT_FULL: " + core.pySelfTestFull(profile))
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
             }
@@ -644,12 +611,7 @@ class MainActivity : Activity() {
         log("② 拆分测速 (profile=" + profile + ")…")
         Thread {
             try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test_route2", nativeLibDir(),
-                        filesDir.absolutePath, android.os.Process.myUid(),
-                        profile, "/sdcard/rvc_exp")
-                log("RESULT_ROUTE2: " + out.toString())
+                log("RESULT_ROUTE2: " + core.pySelfTestRoute2(profile))
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
             }
@@ -664,12 +626,7 @@ class MainActivity : Activity() {
         log("iSTFT 拆分测速 (f0=$f0m b=$br profile=" + profile + ")…")
         Thread {
             try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test_route2_istft", nativeLibDir(),
-                        filesDir.absolutePath, android.os.Process.myUid(),
-                        profile, "/sdcard/rvc_exp", f0m, br)
-                log("RESULT_ROUTE2_ISTFT: " + out.toString())
+                log("RESULT_ROUTE2_ISTFT: " + core.pySelfTestRoute2Istft(profile, f0m, br))
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
             }
@@ -688,12 +645,7 @@ class MainActivity : Activity() {
         log("模拟实时:参考音频→实时链路→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s".format(key, rms, idx, prot, f0m))
         Thread {
             try {
-                ensurePy()
-                val outBytes = Python.getInstance().getModule("rvc_api")
-                    .callAttr("process_stream_v2_ref", nativeLibDir(),
-                        filesDir.absolutePath, android.os.Process.myUid(),
-                        profile, key, rms, idx, prot, f0m)
-                    .toJava(ByteArray::class.java)
+                val outBytes = core.pyProcessStreamV2Ref(profile, key, rms, idx, prot, f0m)
                 val outF = FloatArray(outBytes.size / 4)
                 ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
                 val tr = AudioTrack.Builder()
@@ -723,12 +675,7 @@ class MainActivity : Activity() {
         log("内存链路验证 (profile=" + profile + ")…")
         Thread {
             try {
-                ensurePy()
-                val out = Python.getInstance().getModule("rvc_api")
-                    .callAttr("self_test_live_io", nativeLibDir(),
-                        filesDir.absolutePath, android.os.Process.myUid(),
-                        profile)
-                log("RESULT_LIVE: " + out.toString())
+                log("RESULT_LIVE: " + core.pySelfTestLiveIo(profile))
             } catch (e: Throwable) {
                 log("PY FAIL: " + e)
             }
@@ -752,7 +699,6 @@ class MainActivity : Activity() {
         log("实时:录音→变声→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s".format(key, rms, idx, prot, f0m))
         Thread {
             try {
-                ensurePy()
                 val sr = 16000
                 val n = 35840   // 2.24s
                 val minBuf = AudioRecord.getMinBufferSize(
@@ -774,10 +720,7 @@ class MainActivity : Activity() {
                 if (rd < n) { log("LIVE FAIL: 录音不足"); return@Thread }
                 val inBytes = ByteArray(n * 4)
                 ByteBuffer.wrap(inBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().put(buf)
-                val outBytes = Python.getInstance().getModule("rvc_api")
-                    .callAttr("process_audio", nativeLibDir(), filesDir.absolutePath,
-                        android.os.Process.myUid(), inBytes, profile, key, rms, idx, prot, f0m)
-                    .toJava(ByteArray::class.java)
+                val outBytes = core.pyProcessAudio(profile, inBytes, key, rms, idx, prot, f0m)
                 val outF = FloatArray(outBytes.size / 4)
                 ByteBuffer.wrap(outBytes).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer().get(outF)
                 val tr = AudioTrack.Builder()
@@ -811,15 +754,10 @@ class MainActivity : Activity() {
         log("测延迟 (key=%d rms=%.2f idx=0 prot=%.2f)…".format(key, rms, prot))
         Thread {
             try {
-                ensurePy()
-                Python.getInstance().getModule("rvc_api").callAttr(
-                    "stream_create", nativeLibDir(), filesDir.absolutePath,
-                    android.os.Process.myUid(), profile, key, rms, 0.0f, prot, 64, 12,
-                    RoleManager.currentRoleDir(filesDir, prefs), RoleManager.effectiveSoc())
-                val ms = Python.getInstance().getModule("rvc_api")
-                    .callAttr("stream_measure_latency", 4).toDouble()
+                core.pyStreamCreate(profile, key, rms, 0.0f, prot, 64, 12)
+                val ms = core.pyStreamMeasureLatency()
                 val s = "%.0f".format(ms)
-                val thermal = readThermalSummary()
+                val thermal = core.readThermalSummary()
                 prefs.edit().putString("latency_measured_ms", s).apply()
                 runOnUiThread { latencyView.text = "实测延迟: $s ms\n$thermal" }
                 log("实测延迟 = $s ms (块时长预算 370ms, 实时需 <=370) | $thermal")
@@ -870,121 +808,6 @@ class MainActivity : Activity() {
         }
     }
 
-    /* 轻量检测 HAL 模块是否生效:ro.hardware.audio.primary 应为 rvc。
-     * 无需 root 权限,读系统属性即可;非 root/未装模块时会拦截 HAL 启动。 */
-    private fun isHalModuleActive(): Boolean {
-        return try {
-            val p = ProcessBuilder("getprop", "ro.hardware.audio.primary").start()
-            val s = p.inputStream.bufferedReader().readText().trim().lowercase()
-            p.waitFor()
-            s.contains("rvc")
-        } catch (t: Throwable) {
-            false
-        }
-    }
-
-    /* KernelSU 的 su 二进制在 /data/adb/ksu/bin/su,默认不在 App 的 PATH 里;
-     * Magisk 的 su 在 PATH 里。依次尝试,谁能启动就用谁。 */
-    private fun runSu(cmd: String): Pair<Int, String> {
-        val candidates = listOf(
-            "su",
-            "/data/adb/ksu/bin/su",
-            "/system/bin/su",
-            "/system/xbin/su",
-            "/sbin/su"
-        )
-        for (su in candidates) {
-            try {
-                val p = ProcessBuilder(su, "-c", cmd).redirectErrorStream(true).start()
-                val out = p.inputStream.bufferedReader().readText()
-                val rc = p.waitFor()
-                return rc to out
-            } catch (t: Throwable) {
-                // 这个 su 不存在/不可执行,试下一个
-            }
-        }
-        return -1 to ""
-    }
-
-    /* 音频 HAL 方案探测:
-     * AIDL   = 第3代,不加载 audio.primary.*.so,老 wrapper 无效(K80 这种)
-     * HIDL   = 第2代,仍会加载 audio.primary.*.so,wrapper 有效
-     * LEGACY = 第1代,直接加载 audio.primary.*.so,wrapper 有效
-     * UNKNOWN = 探测不到,保守按不支持处理
-     */
-    private fun detectHalScheme(): String {
-        val script = """
-            if service list 2>/dev/null | grep -q "android.hardware.audio.core.IModule"; then echo AIDL; exit 0; fi
-            if ls /vendor/lib64/android.hardware.audio.core-*-ndk.so /vendor/lib/android.hardware.audio.core-*-ndk.so 2>/dev/null | head -1 | grep -q .; then echo AIDL; exit 0; fi
-            if ls /vendor/bin/hw/audiohalservice* /vendor/bin/hw/android.hardware.audio.service 2>/dev/null | head -1 | grep -q .; then echo AIDL; exit 0; fi
-            if service list 2>/dev/null | grep -q "android.hardware.audio@"; then echo HIDL; exit 0; fi
-            if grep -l "audio.primary" /proc/[0-9]*/maps 2>/dev/null | head -1 | grep -q .; then echo LEGACY; exit 0; fi
-            if ls /vendor/lib64/hw/audio.primary.*.so /vendor/lib/hw/audio.primary.*.so 2>/dev/null | grep -v 'audio.primary.default.so' | head -1 | grep -q .; then echo LEGACY; exit 0; fi
-            echo UNKNOWN
-        """.trimIndent()
-        val (rc, out) = runSu(script)
-        if (rc != 0) return "UNKNOWN"
-        val line = out.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() } ?: "UNKNOWN"
-        return if (line in setOf("AIDL", "HIDL", "LEGACY", "UNKNOWN")) line else "UNKNOWN"
-    }
-
-    /** 读取 CPU/DSP/GPU/电池温度,用于测延迟时判断是否热降频。
-     * 温度值默认毫摄氏度,统一除以 1000。 */
-    private fun readThermalSummary(): String {
-        val cmd = "for z in /sys/class/thermal/thermal_zone*; do " +
-            "t=\$(cat \$z/temp 2>/dev/null); n=\$(cat \$z/type 2>/dev/null); " +
-            "echo \"\$n:\$t\"; done"
-        val (rc, out) = runSu(cmd)
-        if (rc != 0 || out.isBlank()) return "温度读取失败"
-        var cpu = -1.0
-        var nsp = -1.0
-        var gpu = -1.0
-        var bat = -1.0
-        for (line in out.lineSequence()) {
-            val idx = line.indexOf(':')
-            if (idx <= 0) continue
-            val name = line.substring(0, idx).trim()
-            val v = line.substring(idx + 1).trim().toDoubleOrNull() ?: continue
-            val c = v / 1000.0
-            when {
-                name.startsWith("cpu") -> if (c > cpu) cpu = c
-                name.startsWith("nsp") -> if (c > nsp) nsp = c
-                name.startsWith("gpu") -> if (c > gpu) gpu = c
-                name == "battery" -> bat = c
-            }
-        }
-        val sb = StringBuilder()
-        if (cpu >= 0) sb.append("CPU=").append("%.1f".format(cpu)).append("°C ")
-        if (nsp >= 0) sb.append("DSP=").append("%.1f".format(nsp)).append("°C ")
-        if (gpu >= 0) sb.append("GPU=").append("%.1f".format(gpu)).append("°C ")
-        if (bat >= 0) sb.append("电池=").append("%.1f".format(bat)).append("°C")
-        return sb.toString().trim().ifBlank { "温度读取失败" }
-    }
-
-    private fun hasRoot(): Boolean {
-        val (rc, out) = runSu("id")
-        return rc == 0 && out.contains("uid=0")
-    }
-
-    private fun moduleInstalledVersion(): String? {
-        val (rc, out) = runSu("grep '^version=' /data/adb/modules/rvc_virtual_mic_hal/module.prop 2>/dev/null")
-        if (rc != 0) return null
-        return out.trim().removePrefix("version=").ifBlank { null }
-    }
-
-    private fun copyBundledModuleZip(): File? {
-        return try {
-            val dir = getExternalFilesDir(null) ?: filesDir
-            val f = File(dir, "rvc_module.zip")
-            assets.open("rvc_module.zip").use { input ->
-                f.outputStream().use { output -> input.copyTo(output) }
-            }
-            f
-        } catch (t: Throwable) {
-            null
-        }
-    }
-
     private fun installHalModule() {
         thread {
             log("① 设备兼容性检测…")
@@ -1016,7 +839,7 @@ class MainActivity : Activity() {
             .setTitle("HAL 模块已更新")
             .setMessage("重启后新的 HAL 模块才会生效。现在重启吗?")
             .setPositiveButton("立即重启") { _, _ ->
-                thread { runSu("reboot") }
+                thread { core.runSu("reboot") }
             }
             .setNegativeButton("稍后", null)
             .show()
@@ -1107,13 +930,13 @@ class MainActivity : Activity() {
         thread {
             log("✓ 用户已确认风险,继续安装")
             log("① 检查 root…")
-            if (!hasRoot()) {
+            if (!core.hasRoot()) {
                 log("✗ 未获得 root 授权:请先在 Magisk/KernelSU 中允许本应用")
                 return@thread
             }
             log("✓ root 正常")
             log("② 探测音频 HAL 方案…")
-            val scheme = detectHalScheme()
+            val scheme = core.detectHalScheme()
             log("音频 HAL 方案: $scheme")
             if (scheme != "LEGACY" && scheme != "HIDL") {
                 log("✗ 此设备为 $scheme 音频 HAL,不加载 audio.primary.*.so,已拦截安装")
@@ -1124,22 +947,22 @@ class MainActivity : Activity() {
                 return@thread
             }
             log("✓ 方案可用,继续")
-            val cur = moduleInstalledVersion()
+            val cur = core.moduleInstalledVersion()
             log(if (cur != null) "当前模块版本: $cur" else "未检测到已装模块")
             log("② 解出内置模块包…")
-            val zip = copyBundledModuleZip()
+            val zip = core.copyBundledModuleZip()
             if (zip == null) {
                 log("✗ 内置模块包读取失败")
                 return@thread
             }
             log("✓ 已解出: ${zip.absolutePath}")
             log("③ 执行 magisk --install-module …")
-            var (rc, out) = runSu("magisk --install-module \"${zip.absolutePath}\"")
+            var (rc, out) = core.runSu("magisk --install-module \"${zip.absolutePath}\"")
             if (rc == 0) {
                 log("✓ Magisk 安装成功")
             } else {
                 log("magisk 失败(rc=$rc),试 ksud module install …\n$out")
-                val (rc2, out2) = runSu("/data/adb/ksud module install \"${zip.absolutePath}\"")
+                val (rc2, out2) = core.runSu("/data/adb/ksud module install \"${zip.absolutePath}\"")
                 if (rc2 == 0) {
                     rc = 0
                     log("✓ KernelSU 安装成功")
@@ -1461,27 +1284,6 @@ class MainActivity : Activity() {
                 log("角色安装失败: $e")
             }
         }.start()
-    }
-
-    /** 递归复制 assets 子目录到 filesDir,已存在文件跳过、缺失补拷(参考 GSV)。 */
-    private fun extract(src: String, dst: File) {
-        if (!dst.exists()) dst.mkdirs()
-        assets.list(src)?.forEach { name ->
-            val full = "$src/$name"
-            val child = File(dst, name)
-            var isDir = false
-            try { assets.open(full).use { } } catch (e: Exception) { isDir = true }
-            if (isDir) extract(full, child)
-            else if (!child.exists())
-                assets.open(full).use { ins -> child.outputStream().use { ins.copyTo(it) } }
-        }
-    }
-
-    private fun nativeLibDir(): String =
-        try { applicationInfo.nativeLibraryDir } catch (e: Exception) { "?" }
-
-    private fun ensurePy() {
-        if (!Python.isStarted()) Python.start(AndroidPlatform(this))
     }
 
     private fun log(s: String) {
