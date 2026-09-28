@@ -70,9 +70,11 @@ android {
 }
 
 // Chaquopy 17+ 顶层扩展(16→17:AGP 8.13 支持,Python 3.11 保留)
+// Python 解释器路径:优先读环境变量 RVC_BUILD_PYTHON(避免个人绝对路径入库);
+// 未设置时让 Chaquopy 走 PATH 里的 python。
 chaquopy {
     defaultConfig {
-        buildPython("C:/Users/<USER>/python.exe")
+        buildPython(System.getenv("RVC_BUILD_PYTHON") ?: "python")
         version = "3.11"
         pip {
             install("numpy")

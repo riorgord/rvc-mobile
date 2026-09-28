@@ -59,7 +59,6 @@ android/                 Android App 工程
   app/src/main/java/...    Kotlin 源码
 model-builder/            RVC 模型转换/打包工具
   build_shared.py          shared.zip 打包脚本(含 LICENSES)
-  build_role.py            角色包打包脚本(如存在)
   convert.py               ONNX -> QNN DLC 转换
   shared_src/              共享件源文件(不入库,gitignore)
   LICENSES/               许可证文本(随 shared.zip 分发)
@@ -78,7 +77,7 @@ docs/                     发布与合规文档
 | Android SDK | compileSdk 37 | ANDROID_HOME 指向 SDK |
 | Gradle | 8.13 | 仓库自带 wrapper(`android/gradle/wrapper`) |
 | AGP | 8.13 | 见 `android/settings.gradle.kts` |
-| Chaquopy 构建 Python | 3.11 | 本地 Python,Chaquopy 17 用 |
+| Chaquopy 构建 Python | 3.11 | 本地 Python,Chaquopy 17 用;构建前设 `RVC_BUILD_PYTHON=<python 绝对路径>`(如不设则走 PATH) |
 | QNN SDK | 2.47+ | 仅 native 层编译需要头文件(见下) |
 
 ### 编译 QNN 头文件(仅 native/ 需要)

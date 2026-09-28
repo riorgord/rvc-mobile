@@ -1,6 +1,0 @@
-{
-  "backend_extensions": {
-    "shared_library_path": "libQnnHtpNetRunExtensions.so",
-    "config_file_path": "/mnt/d/AI/claw_repair/research/rvc/rvc_app/model-builder/htp_cfg_8e/dec_short_T61.htp.json"
-  }
-}
