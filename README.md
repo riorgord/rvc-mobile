@@ -6,7 +6,7 @@
 
 ## 致谢
 
-- 感谢**蓝色大肥鱼**的辛勤付出(机架/变声相关工作的指导与支持)。
+- 感谢**蓝色大肥鱼(DeepSeek)**的辛勤付出(本项目大量代码与调试工作由其协助完成)。
 - RVC 推理/训练代码来自 RVC-Project(Retrieval-based-Voice-Conversion-WebUI,MIT),完整第三方许可见 `THIRD_PARTY_NOTICES.md`。
 
 ## 特性
