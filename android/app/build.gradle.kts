@@ -3,12 +3,13 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+    id("org.jetbrains.kotlin.plugin.compose")
     id("com.chaquo.python")
 }
 
 android {
     namespace = "com.rvc.app"
-    compileSdk = 36
+    compileSdk = 37
     ndkVersion = "26.3.11579264"
 
     defaultConfig {
@@ -56,12 +57,19 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
+
+    kotlin {
+        compilerOptions {
+            jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+        }
+    }
+
+    buildFeatures {
+        compose = true
     }
 }
 
-// Chaquopy 16+ 顶层扩展
+// Chaquopy 17+ 顶层扩展(16→17:AGP 8.13 支持,Python 3.11 保留)
 chaquopy {
     defaultConfig {
         buildPython("C:/Users/<USER>/python.exe")
@@ -73,4 +81,13 @@ chaquopy {
 }
 
 dependencies {
+    // Compose 运行时(Compose Multiplatform 的 androidx 映射,由 Miuix 传递依赖带入,
+    // 这里显式声明 android 平台变体)
+    implementation("androidx.activity:activity-compose:1.9.3")
+
+    // Miuix(HyperOS 风格组件库,Apache-2.0)
+    // 0.9.3 = Compose 1.11,需 compileSdk 37 + AGP 8.9.1+;0.9.4 需 AGP 9.1+(Chaquopy 17 上限内选 0.9.3)
+    implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.3")
+    implementation("top.yukonga.miuix.kmp:miuix-preference-android:0.9.3")
+    implementation("top.yukonga.miuix.kmp:miuix-icons-android:0.9.3")
 }

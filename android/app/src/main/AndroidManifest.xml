@@ -37,6 +37,11 @@
             </intent-filter>
         </activity>
 
+        <!-- P0.5 冒烟验证入口(adb 直接启动,不占 launcher;exported=true 供 shell 启动) -->
+        <activity
+            android:name=".SmokeActivity"
+            android:exported="true" />
+
         <!-- 麦克风前台服务:防 MIUI 后台静音 -->
         <service
             android:name=".MicrophoneService"
