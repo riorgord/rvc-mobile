@@ -4,6 +4,11 @@
 
 > 状态:开发中。当前仓库为 App 工程 + 模型打包脚本,不包含任何未授权音源。
 
+## 致谢
+
+- 感谢**蓝色大肥鱼**的辛勤付出(机架/变声相关工作的指导与支持)。
+- RVC 推理/训练代码来自 RVC-Project(Retrieval-based-Voice-Conversion-WebUI,MIT),完整第三方许可见 `THIRD_PARTY_NOTICES.md`。
+
 ## 特性
 
 - 虚拟 HAL 麦克风(`audio.primary.rvc.so` 包装器 + `rvc_relay` 开机自启)
