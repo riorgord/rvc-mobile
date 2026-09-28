@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -346,6 +347,17 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
         doInstallHalModule()
     }
 
+    /** 手动选择本机 SoC(设置页弹窗)。null = 恢复自动检测。 */
+    fun setSocOverride(soc: String?) {
+        if (soc == null) {
+            core.prefs.edit().remove("soc_override").apply()
+        } else {
+            core.prefs.edit().putString("soc_override", soc).apply()
+        }
+        RoleManager.setManualSoc(soc)
+        _soc.value = RoleManager.effectiveSoc().ifEmpty { null }
+    }
+
     private fun doInstallHalModule() {
         viewModelScope.launch {
             val log = withContext(Dispatchers.IO) {
@@ -402,5 +414,241 @@ class RvcViewModel(application: Application) : AndroidViewModel(application) {
     fun consumeInstallState() {
         _installLog.value = null
         _installPendingReboot.value = false
+    }
+
+    // ---------------- 调试页(P2.5) ----------------
+
+    private val _logLines = MutableStateFlow<List<String>>(emptyList())
+    val logLines: StateFlow<List<String>> = _logLines.asStateFlow()
+
+    /** 调试日志:追加一行(带时间戳),cap 200 行。线程安全(StateFlow.update)。 */
+    fun debugLog(msg: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.US)
+            .format(java.util.Date())
+        _logLines.update { (it + "[$ts] $msg").takeLast(200) }
+    }
+
+    /** 清空调试日志。 */
+    fun clearLog() {
+        _logLines.value = emptyList()
+    }
+
+    // 调试参数(会话级,与旧 UI 默认一致;不持久化)
+    private val _debugProfile = MutableStateFlow(false)
+    val debugProfile: StateFlow<Boolean> = _debugProfile.asStateFlow()
+    private val _debugKey = MutableStateFlow("0")
+    val debugKey: StateFlow<String> = _debugKey.asStateFlow()
+    private val _debugRms = MutableStateFlow("0.75")
+    val debugRms: StateFlow<String> = _debugRms.asStateFlow()
+    private val _debugIdx = MutableStateFlow("0.5")
+    val debugIdx: StateFlow<String> = _debugIdx.asStateFlow()
+    private val _debugProt = MutableStateFlow("0.4")
+    val debugProt: StateFlow<String> = _debugProt.asStateFlow()
+    private val _debugF0 = MutableStateFlow("fcpe")
+    val debugF0: StateFlow<String> = _debugF0.asStateFlow()
+    private val _debugBrightness = MutableStateFlow(0)
+    val debugBrightness: StateFlow<Int> = _debugBrightness.asStateFlow()
+
+    // 实测延迟(prefs 持久化,杀后台不丢)
+    private val _latencyMs = MutableStateFlow<String?>(null)
+    val latencyMs: StateFlow<String?> = _latencyMs.asStateFlow()
+
+    fun setDebugProfile(v: Boolean) { _debugProfile.value = v }
+    fun setDebugKey(v: String) { _debugKey.value = v }
+    fun setDebugRms(v: String) { _debugRms.value = v }
+    fun setDebugIdx(v: String) { _debugIdx.value = v }
+    fun setDebugProt(v: String) { _debugProt.value = v }
+    fun setDebugF0(v: String) { _debugF0.value = v }
+    fun setDebugBrightness(v: Int) { _debugBrightness.value = v }
+
+    /** 调试页打开时:恢复上次实测延迟。 */
+    fun refreshLatency() {
+        _latencyMs.value = core.prefs.getString("latency_measured_ms", null)
+    }
+
+    // F0 提取器加载去重(fcpe/rmvpe/gf_ref)
+    private val f0Loading = mutableMapOf<String, Boolean>()
+    private val f0Loaded = mutableMapOf<String, Boolean>()
+
+    fun ensureF0(m: String) {
+        if (f0Loaded[m] == true || f0Loading[m] == true) return
+        f0Loading[m] = true
+        debugLog("加载 F0 提取器 $m …")
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { core.pyInitF0(m) }
+                f0Loaded[m] = true
+                debugLog("F0 $m 已就绪")
+            } catch (e: Throwable) {
+                f0Loaded.remove(m)
+                debugLog("F0 加载失败: $e")
+            } finally {
+                f0Loading[m] = false
+            }
+        }
+    }
+
+    /** 解析调试参数面板(非法输入回默认值)。 */
+    private data class DebugParams(val key: Int, val rms: Float, val idx: Float, val prot: Float)
+
+    private fun params(): DebugParams = DebugParams(
+        key = _debugKey.value.toIntOrNull() ?: 0,
+        rms = _debugRms.value.toFloatOrNull() ?: 0.75f,
+        idx = _debugIdx.value.toFloatOrNull() ?: 0.5f,
+        prot = _debugProt.value.toFloatOrNull() ?: 0.4f,
+    )
+
+    /** 通用后台跑 Python 自检:日志前缀 + 结果标签。 */
+    private fun runPy(tag: String, resTag: String, block: () -> String) {
+        debugLog("$tag (profile=${_debugProfile.value})…")
+        viewModelScope.launch {
+            try {
+                debugLog("$resTag: " + withContext(Dispatchers.IO) { block() })
+            } catch (e: Throwable) {
+                debugLog("PY FAIL: $e")
+            }
+        }
+    }
+
+    /** 设备兼容性检测(调试页版,结果进日志流)。 */
+    fun runDeviceCheckDebug() {
+        debugLog("① 设备兼容性检测…")
+        viewModelScope.launch {
+            val guard = withContext(Dispatchers.IO) { DeviceGuard.evaluate() }
+            debugLog("检测结果: tier=${guard.tier} root=${guard.rootType} " +
+                "kernel_official=${guard.checks[1].pass} audio_primary=${guard.checks[2].pass} sdk=${guard.checks[3].detail}")
+            debugLog("内核: ${guard.kernelVersion.take(120)}")
+        }
+    }
+
+    /** 3 模型全检。 */
+    fun runAllModels() = runPy("3 模型全检", "RESULT_ALL") { core.pySelfTestAll(_debugProfile.value) }
+
+    /** 全链路自检。 */
+    fun runFullChain() = runPy("全链路", "RESULT_FULL") { core.pySelfTestFull(_debugProfile.value) }
+
+    /** ② 拆分测速(z_producer + dec_short 滑窗)。 */
+    fun runRoute2() = runPy("② 拆分测速", "RESULT_ROUTE2") { core.pySelfTestRoute2(_debugProfile.value) }
+
+    /** iSTFT dec 块级流式自测。 */
+    fun runRoute2Istft() {
+        val f0m = _debugF0.value
+        val br = _debugBrightness.value / 100f
+        runPy("iSTFT 拆分测速 (f0=$f0m b=$br)", "RESULT_ROUTE2_ISTFT") {
+            core.pySelfTestRoute2Istft(_debugProfile.value, f0m, br)
+        }
+    }
+
+    /** M2 内存链路验证(process_audio vs PC 参考)。 */
+    fun runLiveIo() = runPy("内存链路验证", "RESULT_LIVE") { core.pySelfTestLiveIo(_debugProfile.value) }
+
+    /** 模拟实时:参考音频 → 实时链路 → AudioTrack 播放(40k)。 */
+    fun runSim() {
+        val p = params()
+        val f0m = _debugF0.value
+        debugLog("模拟实时:参考音频→实时链路→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s"
+            .format(p.key, p.rms, p.idx, p.prot, f0m))
+        viewModelScope.launch {
+            try {
+                val outBytes = withContext(Dispatchers.IO) {
+                    core.pyProcessStreamV2Ref(_debugProfile.value, p.key, p.rms, p.idx, p.prot, f0m)
+                }
+                val outF = FloatArray(outBytes.size / 4)
+                java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer().get(outF)
+                playFloatPcm(outF)
+                debugLog("模拟播放 %d samples @40k (%.2fs)".format(outF.size, outF.size / 40000.0))
+            } catch (e: Throwable) {
+                debugLog("SIM FAIL: $e")
+            }
+        }
+    }
+
+    /** M2 实时:录音 2.24s(16k)→ 变声 → AudioTrack 播放(40k)。调用前需已授权麦克风。 */
+    fun runLive() {
+        val p = params()
+        val f0m = _debugF0.value
+        debugLog("实时:录音→变声→播放 key=%d rms=%.2f idx=%.2f prot=%.2f f0=%s"
+            .format(p.key, p.rms, p.idx, p.prot, f0m))
+        viewModelScope.launch {
+            try {
+                val outBytes = withContext(Dispatchers.IO) {
+                    val sr = 16000
+                    val n = 35840   // 2.24s
+                    val minBuf = android.media.AudioRecord.getMinBufferSize(
+                        sr, android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_FLOAT)
+                    val rec = android.media.AudioRecord(android.media.MediaRecorder.AudioSource.MIC, sr,
+                        android.media.AudioFormat.CHANNEL_IN_MONO, android.media.AudioFormat.ENCODING_PCM_FLOAT,
+                        minBuf * 2)
+                    if (rec.state != android.media.AudioRecord.STATE_INITIALIZED) {
+                        return@withContext ByteArray(0)
+                    }
+                    rec.startRecording()
+                    val buf = FloatArray(n)
+                    var rd = 0
+                    while (rd < n) {
+                        val r = rec.read(buf, rd, n - rd, android.media.AudioRecord.READ_BLOCKING)
+                        if (r > 0) rd += r else break
+                    }
+                    rec.stop(); rec.release()
+                    debugLog("录音完成 $rd samples")
+                    if (rd < n) return@withContext ByteArray(0)
+                    val inBytes = ByteArray(n * 4)
+                    java.nio.ByteBuffer.wrap(inBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                        .asFloatBuffer().put(buf)
+                    core.pyProcessAudio(_debugProfile.value, inBytes, p.key, p.rms, p.idx, p.prot, f0m)
+                }
+                if (outBytes.isEmpty()) {
+                    debugLog("LIVE FAIL: 录音不足或处理失败")
+                    return@launch
+                }
+                val outF = FloatArray(outBytes.size / 4)
+                java.nio.ByteBuffer.wrap(outBytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                    .asFloatBuffer().get(outF)
+                playFloatPcm(outF)
+                debugLog("变声播放 %d samples @40k (%.2fs)".format(outF.size, outF.size / 40000.0))
+            } catch (e: Throwable) {
+                debugLog("LIVE FAIL: $e")
+            }
+        }
+    }
+
+    /** 播放 40k float PCM(AudioTrack MODE_STATIC)。 */
+    private fun playFloatPcm(outF: FloatArray) {
+        val tr = android.media.AudioTrack.Builder()
+            .setAudioAttributes(android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MUSIC).build())
+            .setAudioFormat(android.media.AudioFormat.Builder()
+                .setSampleRate(40000)
+                .setEncoding(android.media.AudioFormat.ENCODING_PCM_FLOAT)
+                .setChannelMask(android.media.AudioFormat.CHANNEL_OUT_MONO).build())
+            .setBufferSizeInBytes(outF.size * 4)
+            .setTransferMode(android.media.AudioTrack.MODE_STATIC)
+            .build()
+        tr.write(outF, 0, outF.size, android.media.AudioTrack.WRITE_BLOCKING)
+        tr.play()
+    }
+
+    /** 延迟自测:合成音频推入测稳态 T_proc,结果持久化。
+     * 测延迟固定 idx=0(纯 NPU T_proc,不依赖索引资源)。 */
+    fun runLatencyTest() {
+        val p = params()
+        debugLog("测延迟 (key=${p.key} rms=%.2f idx=0 prot=%.2f)…".format(p.rms, p.prot))
+        viewModelScope.launch {
+            try {
+                val ms = withContext(Dispatchers.IO) {
+                    core.pyStreamCreate(_debugProfile.value, p.key, p.rms, 0f, p.prot, 64, 12)
+                    core.pyStreamMeasureLatency()
+                }
+                val s = "%.0f".format(ms)
+                core.prefs.edit().putString("latency_measured_ms", s).apply()
+                _latencyMs.value = s
+                val thermal = core.readThermalSummary()
+                debugLog("实测延迟 = $s ms (块时长预算 370ms, 实时需 <=370) | $thermal")
+            } catch (e: Throwable) {
+                debugLog("测延迟失败: $e")
+            }
+        }
     }
 }

@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -62,12 +63,20 @@ private enum class RvcTab(val label: String, val icon: ImageVector) {
 @Composable
 private fun RvcApp() {
     var current by rememberSaveable { mutableIntStateOf(0) }
+    // 调试页:全屏叠在三 tab 之上;返回(左上箭头)即退出,计数重置由 SettingsScreen 处理
+    var showDebug by rememberSaveable { mutableStateOf(false) }
     val tabs = RvcTab.entries
 
     // Miuix 0.9.3 Overlay 组件(OverlayDialog 等)内部 NavigationBackHandler 需要
     // LocalNavigationEventDispatcherOwner;此处根部提供(手写导航,无 navigation3 宿主)。
     val navOwner = rememberNavigationEventDispatcherOwner(enabled = true, parent = null)
     CompositionLocalProvider(LocalNavigationEventDispatcherOwner provides navOwner) {
+        if (showDebug) {
+            DebugScreen(
+                onClose = { showDebug = false },
+            )
+            return@CompositionLocalProvider
+        }
         Scaffold(
             topBar = {
                 TopAppBar(
@@ -92,7 +101,9 @@ private fun RvcApp() {
                 RvcTab.LIBRARY -> LibraryScreen(contentPadding)
                 RvcTab.SETTINGS -> SettingsScreen(
                     contentPadding = contentPadding,
-                    onOpenDebug = { /* P2.5:跳转调试页 */ },
+                    onOpenDebug = {
+                        showDebug = true
+                    },
                 )
             }
         }

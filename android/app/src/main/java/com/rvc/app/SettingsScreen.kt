@@ -53,6 +53,7 @@ fun SettingsScreen(
     var showRedDialog by remember { mutableStateOf(false) }
     var showYellowDialog by remember { mutableStateOf(false) }
     var showRebootDialog by remember { mutableStateOf(false) }
+    var showSocDialog by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         vm.refreshHalState()
@@ -105,7 +106,7 @@ fun SettingsScreen(
                 ArrowPreference(
                     title = "本机 SoC",
                     summary = soc ?: "未知(需手动选择)",
-                    onClick = { /* P2.5:SoC 选择弹窗 */ },
+                    onClick = { showSocDialog = true },
                 )
             }
 
@@ -143,10 +144,13 @@ fun SettingsScreen(
     // 弹窗显示时,返回键只关弹窗(不退出 Activity)。
     // 注:miuix 0.9.3 OverlayDialog 的返回键处理依赖导航宿主喂 back 事件,
     // 本项目手写导航无宿主,故用 activity-compose 的 BackHandler 兜底。
-    BackHandler(enabled = showRedDialog || showYellowDialog || showRebootDialog) {
+    BackHandler(
+        enabled = showRedDialog || showYellowDialog || showRebootDialog || showSocDialog
+    ) {
         showRedDialog = false
         showYellowDialog = false
         showRebootDialog = false
+        showSocDialog = false
         vm.consumeInstallState()
     }
 
@@ -176,8 +180,17 @@ fun SettingsScreen(
     }
 
     if (showYellowDialog) {
+        // 勾选框立即可勾;「继续安装」10 秒倒计时(开屏广告样式)后才可点
         var confirmed by remember { mutableStateOf(false) }
+        var remaining by remember { mutableStateOf(10) }
         val risks = guard?.yellowReasons?.joinToString("\n• ", "• ") ?: ""
+        LaunchedEffect(showYellowDialog) {
+            remaining = 10
+            while (remaining > 0) {
+                kotlinx.coroutines.delay(1000)
+                remaining--
+            }
+        }
         OverlayDialog(
             show = showYellowDialog,
             title = "⚠ 设备条件与已验证基线不完全一致",
@@ -189,15 +202,55 @@ fun SettingsScreen(
                 vm.consumeInstallState()
             },
         ) {
+            Card(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 12.dp),
+                onClick = { confirmed = !confirmed },
+            ) {
+                Text(
+                    text = if (confirmed) "✓ 我已阅读并理解上述风险" else "☐ 我已阅读并理解上述风险",
+                    modifier = Modifier.padding(16.dp),
+                )
+            }
             TextButton(
-                text = if (confirmed) "✓ 已确认风险,继续安装" else "请阅读风险说明后点击确认",
+                text = if (remaining > 0) "继续安装 ($remaining)" else "继续安装",
+                enabled = confirmed && remaining <= 0,
                 onClick = {
-                    confirmed = true
                     showYellowDialog = false
                     vm.confirmInstallHalModule()
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+    }
+
+    if (showSocDialog) {
+        val socOptions = listOf("sm8475", "sm8450", "sm8550", "sm8650", "sm8750", "sm8850")
+        OverlayDialog(
+            show = showSocDialog,
+            title = "选择本机 SoC",
+            summary = "手动选择后优先于自动探测;QNN 产物绑死架构,选错将无法变声",
+            onDismissRequest = { showSocDialog = false },
+        ) {
+            TextButton(
+                text = "自动检测(推荐)",
+                onClick = {
+                    vm.setSocOverride(null)
+                    showSocDialog = false
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            socOptions.forEach { s ->
+                TextButton(
+                    text = s + if (s == soc) "(当前)" else "",
+                    onClick = {
+                        vm.setSocOverride(s)
+                        showSocDialog = false
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 
